@@ -95,7 +95,7 @@ cron:
 
 session:
   expire_days: 30
-  override: {}               # {"wechat:o9cq80:o9cq80": "wechat:custom:o9cq80"}
+  override: {}               # {"wechat:<id>:<id>": "wechat:custom:<id>"}
 
 sandbox:
   roots:                           # allowed directories (boundary for all file tools + bash)
