@@ -72,7 +72,7 @@ def test_doctor_report_includes_security_mode():
     assert report["sandbox"]["process"]["effective_backend"] in {"bwrap", "legacy"}
     assert "filesystem_isolated" in report["sandbox"]["process"]
     assert "by_permission" in report["tools"]
-    assert "Lumora doctor" in summary
+    assert "Friday doctor" in summary
     assert "工具:" in summary
     assert "doctor --verbose" in summary
     assert "Effective Config:" not in summary
@@ -470,7 +470,7 @@ def test_doctor_report_includes_runtime_failure(monkeypatch):
     assert report["runtime"]["initialized"] is False
     assert "Runtime 初始化失败: RuntimeError: broken" in text
     assert "内置 memory provider 不可用" in verbose_text
-    assert "Lumora doctor" in text
+    assert "Friday doctor" in text
     assert "状态: 不可用，需要处理" in text
 
 
@@ -1058,7 +1058,7 @@ def test_format_doctor_report_includes_summary_and_issues():
     summary_text = format_doctor_report(report)
     text = format_doctor_report(report, verbose=True)
 
-    assert "Lumora doctor" in summary_text
+    assert "Friday doctor" in summary_text
     assert "状态: 可用，有提示" in summary_text
     assert "模型: deepseek / deepseek-v4-flash" in summary_text
     assert "运行时: 已就绪" in summary_text

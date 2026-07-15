@@ -1728,7 +1728,7 @@ def format_doctor_report(report: dict[str, Any], *, section: str = "all", verbos
     execution_runtime = runtime.get("execution", {})
     mcp_runtime = report.get("mcp_runtime") or runtime.get("mcp") or {}
     lines = [
-        "Lumora doctor --verbose",
+        "Friday doctor --verbose",
         f"总体状态: {'需要注意' if issues else '正常'}",
         f"数据目录: {report['data_dir']}",
         f"日志级别: {report['log_level']}",
@@ -1908,7 +1908,7 @@ def _format_doctor_summary_report(report: dict[str, Any]) -> str:
     platforms = list(report.get("platforms") or [])
 
     lines = [
-        "Lumora doctor",
+        "Friday doctor",
         "",
         f"状态: {_doctor_summary_status(report, issues)}",
         f"模型: {report.get('llm_provider') or '-'} / {report.get('llm_model') or '-'}",
@@ -2182,7 +2182,7 @@ def _format_doctor_section(report: dict[str, Any], section: str) -> str:
         return "\n".join(lines)
     if section == "plugins":
         return format_plugin_list(report.get("plugins", []))
-    lines = [f"Lumora doctor: {section}"]
+    lines = [f"Friday doctor: {section}"]
     if section == "runtime":
         runtime = report.get("runtime", {})
         gateway = report.get("gateway", {})
