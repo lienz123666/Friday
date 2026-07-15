@@ -12,6 +12,7 @@ from uuid import uuid4
 import aiosqlite
 
 from personal_agent.memory.models import MemoryRecord, MemoryScope, Observation, ObservationKind, utc_now
+from personal_agent.text_safety import sanitize_persistence_payload, sanitize_persistence_text
 
 SCHEMA_VERSION = 4
 SCHEMA = """
@@ -143,7 +144,7 @@ class MemoryArchive:
     async def finish_review_batch(self, batch_id: str, *, status: str, error: str = "") -> None:
         await self._execute_write(
             "UPDATE review_batches SET status = ?, error = ?, updated_at = ? WHERE id = ?",
-            (status, error, utc_now(), batch_id),
+            (status, sanitize_persistence_text(error, max_chars=2_000), utc_now(), batch_id),
         )
 
     async def save_observations(self, scope: MemoryScope, observations: tuple[Observation, ...],
@@ -152,12 +153,13 @@ class MemoryArchive:
             return
         async with self._write_lock:
             for item in observations:
+                content = sanitize_persistence_text(item.content)
                 await self._connection.execute(
                     """INSERT OR IGNORE INTO observations
                     (id,batch_id,scope_key,kind,content,content_hash,importance,long_term,source_turn_ids_json,migration_status,created_at)
                     VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-                    (item.id, batch_id, _scope_key(scope), item.kind.value, item.content,
-                     _content_hash(item.content), item.importance, int(item.long_term),
+                    (item.id, batch_id, _scope_key(scope), item.kind.value, content,
+                     _content_hash(content), item.importance, int(item.long_term),
                      json.dumps(item.source_turn_ids), migration_status, item.created_at),
                 )
             await self._connection.commit()
@@ -165,6 +167,10 @@ class MemoryArchive:
     async def upsert_memory(self, scope: MemoryScope, record: MemoryRecord, *, action: str = "ADD",
                             previous_content: str = "", reason: str = "") -> None:
         now = utc_now()
+        content = sanitize_persistence_text(record.content)
+        previous = sanitize_persistence_text(previous_content)
+        safe_reason = sanitize_persistence_text(reason)
+        metadata = sanitize_persistence_payload(dict(record.metadata or {}))
         async with self._write_lock:
             await self._connection.execute(
                 """INSERT INTO memories
@@ -173,18 +179,18 @@ class MemoryArchive:
                 ON CONFLICT(id) DO UPDATE SET kind=excluded.kind,content=excluded.content,
                 content_hash=excluded.content_hash,importance=excluded.importance,provider=excluded.provider,
                 index_status=excluded.index_status,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at""",
-                (record.id, _scope_key(scope), record.kind.value, record.content, _content_hash(record.content),
-                 record.importance, record.provider, record.metadata.get("index_status", "ready"),
-                 json.dumps(record.metadata, ensure_ascii=False), record.created_at, now),
+                (record.id, _scope_key(scope), record.kind.value, content, _content_hash(content),
+                 record.importance, record.provider, metadata.get("index_status", "ready"),
+                 json.dumps(metadata, ensure_ascii=False), record.created_at, now),
             )
             await self._connection.execute("DELETE FROM memories_fts WHERE memory_id = ?", (record.id,))
             await self._connection.execute(
                 "INSERT INTO memories_fts(memory_id,scope_key,content) VALUES (?,?,?)",
-                (record.id, _scope_key(scope), record.content),
+                (record.id, _scope_key(scope), content),
             )
             await self._connection.execute(
                 "INSERT INTO memory_history(memory_id,action,previous_content,content,provider,reason,created_at) VALUES (?,?,?,?,?,?,?)",
-                (record.id, action, previous_content, record.content, record.provider, reason, now),
+                (record.id, action, previous, content, record.provider, safe_reason, now),
             )
             await self._connection.commit()
 
@@ -215,7 +221,7 @@ class MemoryArchive:
     async def find_memory_by_content(self, scope: MemoryScope, content: str) -> MemoryRecord | None:
         row = await self._fetchone(
             "SELECT * FROM memories WHERE scope_key = ? AND content_hash = ? LIMIT 1",
-            (_scope_key(scope), _content_hash(content)),
+            (_scope_key(scope), _content_hash(sanitize_persistence_text(content))),
         )
         return _record_from_row(row, scope) if row else None
 
@@ -242,7 +248,7 @@ class MemoryArchive:
         await self._execute_write(
             """UPDATE memories SET index_status = 'pending', index_attempts = index_attempts + 1,
             index_error = ?, index_updated_at = ?, updated_at = ? WHERE id = ?""",
-            (error, now, now, memory_id),
+            (sanitize_persistence_text(error, max_chars=2_000), now, now, memory_id),
         )
 
     async def pending_index_memories(self, scope: MemoryScope, *, limit: int = 10) -> list[MemoryRecord]:
@@ -272,7 +278,13 @@ class MemoryArchive:
             await self._connection.execute("DELETE FROM memories_fts WHERE memory_id = ?", (memory_id,))
             await self._connection.execute(
                 "INSERT INTO memory_history(memory_id,action,previous_content,content,provider,reason,created_at) VALUES (?,'DELETE',?,'',?,?,?)",
-                (memory_id, existing.content, provider, reason, utc_now()),
+                (
+                    memory_id,
+                    sanitize_persistence_text(existing.content),
+                    provider,
+                    sanitize_persistence_text(reason),
+                    utc_now(),
+                ),
             )
             await self._connection.commit()
         return True
@@ -314,7 +326,7 @@ class MemoryArchive:
             """UPDATE observations SET migration_status = 'pending',
             migration_attempts = migration_attempts + 1, migration_error = ?,
             migration_updated_at = ? WHERE id = ?""",
-            (error, utc_now(), observation_id),
+            (sanitize_persistence_text(error, max_chars=2_000), utc_now(), observation_id),
         )
 
     async def migration_status_counts(self, scope: MemoryScope | None = None) -> dict[str, int]:
@@ -354,9 +366,10 @@ class MemoryArchive:
         inserted = 0
         async with self._write_lock:
             for item in observations:
+                content_hash = _content_hash(sanitize_persistence_text(item.content))
                 cursor = await self._connection.execute(
                     "INSERT OR IGNORE INTO internal_buffer(observation_id,scope_key,content_hash,status,created_at,updated_at) VALUES (?,?,?,'pending',?,?)",
-                    (item.id, _scope_key(scope), _content_hash(item.content), now, now),
+                    (item.id, _scope_key(scope), content_hash, now, now),
                 )
                 inserted += max(cursor.rowcount, 0)
             await self._connection.commit()
@@ -399,8 +412,16 @@ class MemoryArchive:
             """UPDATE internal_buffer SET status = ?, target_file = ?, reason = ?,
             proposed_action = ?, proposed_content = ?, entry_id = ?, updated_at = ?
             WHERE observation_id = ?""",
-            (status, target_file, reason, proposed_action, proposed_content, entry_id,
-             utc_now(), observation_id),
+            (
+                status,
+                target_file,
+                sanitize_persistence_text(reason),
+                proposed_action,
+                sanitize_persistence_text(proposed_content),
+                entry_id,
+                utc_now(),
+                observation_id,
+            ),
         )
 
     async def list_buffer(self, scope: MemoryScope, *, status: str = "pending", limit: int = 100) -> list[dict[str, Any]]:

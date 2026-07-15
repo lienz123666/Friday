@@ -2,6 +2,12 @@
 
 更新时间：2026-07-15 CST
 
+## 2026-07-15：记忆库 observations/memories 落库脱敏
+
+- `Observation` / `MemoryRecord` / `MemoryChange` 构造时即调用 `sanitize_persistence_text`；`MemoryArchive` 写入 `observations`、`memories`、FTS、`memory_history`、internal buffer 提案时再次脱敏。
+- 内部 MEMORY.md/USER.md 托管区块写入前同样脱敏，避免聊天中的 API key / Bearer / password 明文进入 `memory.db`。
+- 回归：`tests/test_memory_archive.py::test_memory_archive_redacts_secrets_in_observations_and_memories`。
+
 ## 2026-07-15：提交占位符版 config.yaml
 
 - 将 `config.yaml` 纳入版本库；embedding/Qdrant URL、sandbox 路径、微信 profile key、MCP 路径等敏感信息改为占位符。

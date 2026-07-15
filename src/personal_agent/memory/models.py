@@ -8,6 +8,8 @@ from enum import Enum
 from typing import Any
 from uuid import uuid4
 
+from personal_agent.text_safety import sanitize_persistence_payload, sanitize_persistence_text
+
 
 def utc_now() -> str:
     return datetime.now(UTC).isoformat()
@@ -58,7 +60,7 @@ class Observation:
     created_at: str = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
-        content = self.content.strip()
+        content = sanitize_persistence_text(self.content.strip())
         if not content:
             raise ValueError("Observation content must not be empty")
         if not 0 <= self.importance <= 1:
@@ -97,6 +99,14 @@ class MemoryRecord:
     updated_at: str = field(default_factory=utc_now)
     metadata: dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "content", sanitize_persistence_text(self.content))
+        object.__setattr__(
+            self,
+            "metadata",
+            sanitize_persistence_payload(dict(self.metadata or {})),
+        )
+
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["kind"] = self.kind.value
@@ -113,6 +123,15 @@ class MemoryChange:
     previous_content: str = ""
     reason: str = ""
     created_at: str = field(default_factory=utc_now)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "content", sanitize_persistence_text(self.content))
+        object.__setattr__(
+            self,
+            "previous_content",
+            sanitize_persistence_text(self.previous_content),
+        )
+        object.__setattr__(self, "reason", sanitize_persistence_text(self.reason))
 
     def as_dict(self) -> dict[str, Any]:
         data = asdict(self)

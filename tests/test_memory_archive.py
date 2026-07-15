@@ -82,6 +82,61 @@ async def test_memory_archive_checkpoints_migration_attempts(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_memory_archive_redacts_secrets_in_observations_and_memories(tmp_path) -> None:
+    archive = MemoryArchive(tmp_path / "memory.db")
+    await archive.initialize()
+    scope = MemoryScope(user_id="u1", profile="default")
+    api_key = "sk-proj-abcdefghijklmnopqrstuvwxyz"
+    bearer = "bearer-secret-abcdefghijklmnopqrstuvwxyz"
+    observation = Observation(
+        kind=ObservationKind.FACT,
+        content=f"User API key is {api_key} and Authorization: Bearer {bearer}",
+    )
+    await archive.save_observations(scope, (observation,))
+    record = MemoryRecord(
+        id="secret-mem",
+        content=f"password=hunter2-not-short token={bearer}",
+        provider="fallback",
+        scope=scope,
+        metadata={"api_key": api_key, "note": "safe"},
+    )
+    await archive.upsert_memory(
+        scope,
+        record,
+        previous_content=f"old key={api_key}",
+        reason=f"Cookie: session={bearer}",
+    )
+
+    stored_obs = await archive._fetchone(
+        "SELECT content FROM observations WHERE id = ?",
+        (observation.id,),
+    )
+    stored_mem = await archive._fetchone(
+        "SELECT content, metadata_json FROM memories WHERE id = ?",
+        ("secret-mem",),
+    )
+    history = await archive.memory_history("secret-mem")
+    fts = await archive._fetchone(
+        "SELECT content FROM memories_fts WHERE memory_id = ?",
+        ("secret-mem",),
+    )
+    blob = "\n".join([
+        stored_obs["content"],
+        stored_mem["content"],
+        stored_mem["metadata_json"],
+        fts["content"],
+        history[0]["previous_content"],
+        history[0]["content"],
+        history[0]["reason"],
+    ])
+    assert api_key not in blob
+    assert bearer not in blob
+    assert "[REDACTED]" in stored_mem["metadata_json"] or "*" in blob
+    assert "safe" in stored_mem["metadata_json"]
+    await archive.close()
+
+
+@pytest.mark.asyncio
 async def test_memory_archive_tracks_pending_index_retries(tmp_path) -> None:
     archive = MemoryArchive(tmp_path / "memory.db")
     await archive.initialize()

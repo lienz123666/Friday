@@ -15,6 +15,7 @@ from personal_agent.memory.models import (
     InternalPatchAction,
     InternalPatchOperation,
 )
+from personal_agent.text_safety import sanitize_persistence_text
 
 MANAGED_START = "<!-- lumora-managed:start -->"
 MANAGED_END = "<!-- lumora-managed:end -->"
@@ -109,7 +110,7 @@ def _apply_managed_operations(text: str, operations: list[InternalPatchOperation
     order = [entry_id for entry_id, _ in entries]
     for operation in operations:
         entry_id = operation.entry_id.strip() or operation.observation_id
-        content = " ".join(operation.content.split())
+        content = sanitize_persistence_text(" ".join(operation.content.split()))
         if not content:
             continue
         if entry_id not in values:
