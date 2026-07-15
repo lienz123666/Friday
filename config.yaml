@@ -1,0 +1,192 @@
+# Friday — behavioral configuration
+# API keys / tokens / secrets → .env
+# Replace path / URL / session placeholders below for your machine.
+
+agent:
+  ui: "inline"                    # inline
+  max_iterations: 30
+  max_tool_calls_per_turn: 20
+
+execution:
+  mode: "ask-first"               # read-only | ask-first | local-auto | full-auto
+
+permissions:
+  grant_ttl_minutes: 60           # shared in-memory TTL for tool and resource grants
+  confirm_timeout_seconds: 120
+  tool_approval:
+    default_external: "cached"    # auto | cached | prompt | deny
+    tools:
+      process_kill: "prompt"
+      worktree_merge: "prompt"
+      worktree_cleanup: "prompt"
+    mcp_servers: {}
+
+agents:
+  max_concurrent_runs: 4          # max active delegated sub-agents
+  max_tool_calls: 10              # max tool calls per delegated sub-agent
+  max_tokens: 4096                # max output tokens per delegated sub-agent
+  history_limit: 100              # recent sub-agent runs kept in memory
+
+storage:
+  data_dir: "./data"
+  log_level: "INFO"
+
+compression:
+  engine: "compressor"       # compressor (built-in) | lcm (future)
+  model: ""                  # empty = use main model; set = cheap model
+  max_tokens: 500
+  tail_token_budget: 20000
+  threshold_ratio: 0.6
+
+toolsets:
+  enabled: ["all"]            # ["all"] | ["web","terminal","utility"] | etc.
+
+memory:
+  external_provider: "lumora"      # lumora | mem0 | fallback | none
+  review:
+    external_turn_interval: 10
+    internal_turn_interval: 50
+    internal_buffer_limit: 20
+    snapshot_refresh_turn_interval: 20
+    worker_concurrency: 2
+  llm:
+    provider: "inherit"
+    model: ""
+    api_mode: "auto"
+    max_tokens: 2048
+  embedding:
+    api_mode: "openai_compatible"
+    base_url: "https://YOUR_EMBEDDING_BASE_URL/compatible-mode/v1"
+    api_key_env: "DASHSCOPE_API_KEY"
+    model: "text-embedding-v4"
+    dimensions: 1024
+  qdrant:
+    url: "https://YOUR_QDRANT_CLUSTER.REGION.cloud.qdrant.io"
+    collection: "lumora_memories"
+    api_key_env: "QDRANT_API_KEY"
+    timeout_seconds: 30
+  providers:
+    lumora: {}
+    mem0:
+      options: {}
+
+multimodal:
+  enabled: true                    # true = 接收平台附件并进入统一处理链路
+  image_mode: "auto"               # 图片：auto | native | text | off
+  audio_mode: "auto"               # 音频：auto | text | off；当前无转写能力时会降级提示
+  video_mode: "off"                # 视频：auto | text | off；默认关闭，避免误下载大文件
+  file_mode: "auto"                # 文件：auto | text | off；当前无解析器时会降级提示
+  native_fallback: "notice"        # 原生多模态不可用时：notice（提示）| text（尝试文本化）
+  text_extract_max_chars: 12000     # 文本/PDF/docx 附件最多注入的字符数，超出会截断
+  text_extract_pdf_max_pages: 20    # PDF 附件最多抽取页数，避免大文件污染上下文
+  image_text_mode: "auto"           # 图片文本化：auto | vision | ocr | off；当前默认只预留链路
+  image_text_cache: true            # 是否缓存图片文本化结果，后续 vision/OCR 会复用
+  image_text_max_chars: 6000        # 图片文本化结果最多注入的字符数
+  image_text_provider: "openai"           # 可选视觉辅助 provider，例如 openai / anthropic；密钥用 .env 的 IMAGE_TEXT_API_KEY
+  image_text_api_mode: "responses"
+  image_text_model: "gpt-5.5"              # 可选视觉辅助模型，留空使用 provider 默认或主模型
+  image_text_prompt: ""             # 可选自定义提示词，留空使用内置“提取文字并描述图片”
+  ocr_endpoint: ""                  # 可选本地 OCR HTTP 服务，例如 http://127.0.0.1:7788
+  ocr_timeout_seconds: 20           # OCR 服务请求超时秒数
+  ocr_language: "auto"              # OCR 语言提示，具体支持取决于本地 OCR 服务
+
+cron:
+  enabled: false
+
+session:
+  expire_days: 30
+  override: {}               # {"wechat:o9cq80:o9cq80": "wechat:custom:o9cq80"}
+
+sandbox:
+  roots:                           # allowed directories (boundary for all file tools + bash)
+    - "/path/to/your/project"
+    - "/path/to/another/workspace"
+  blocked:                         # never accessible — glob patterns, applies to all tools
+    - "**/.env"
+    - "**/.env.*"
+    - "**/.git/**"
+    - "**/.ssh/**"
+    - "**/id_rsa*"
+    - "**/.netrc"
+    - "**/data/auth/**"
+    - "**/node_modules/**"
+    - "**/__pycache__/**"
+    - "**/.venv/**"
+    - "**/.claude/**"
+    - "**/audit.log"
+    - "**/pyproject.toml"
+    - "**/config.yaml"
+  bash_work_dir: "./data"          # bash cwd (relative paths resolved from here)
+  bash_restrict_paths: true        # false = bash can access paths outside sandbox roots
+  bash_allow_network: false        # true = allow curl/pip/wget in bash tool
+  process_backend: "auto"         # auto | bwrap | legacy
+  file_max_write_bytes: 100000     # max file_write size
+  audit_enabled: true              # log to data/audit.log
+
+auth:
+  enabled: true               # true = enable auth (static + pairing)
+  admins: []                  # admin user IDs (always pass, no challenge)
+  allowed_users: []           # pre-approved user IDs (skip pairing)
+
+profiles:
+  # Map session_key → profile directory under data/system/
+  # The matching profile's .md files replace the default system prompt.
+  # Example: "wechat:<wx_id>:<wx_id>": "girlfriend"
+  # Fill in your own session keys below.
+  "wechat:<YOUR_WX_ID>@im.wechat:<YOUR_WX_ID>@im.wechat": "girlfriend"
+
+mcp:
+  enabled: true               # enable MCP client subsystem
+  servers:
+    - name: "filesystem"
+      transport: "stdio"
+      command: "npx"
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "/path/to/your/project"]
+      allow_network: true
+      enabled: false  # native file tools already enforce sandbox/blocked paths
+
+    - name: "github"
+      transport: "streamable_http"
+      url: "https://api.githubcopilot.com/mcp/"
+      headers_env:
+        Authorization: "GITHUB_MCP_AUTH"
+      enabled: true  # set GITHUB_MCP_AUTH="Bearer ..." in .env, then enable
+
+    - name: "memory"
+      transport: "stdio"
+      command: "npx"
+      args: ["-y", "@modelcontextprotocol/server-memory"]
+      env:
+        MEMORY_FILE_PATH: "./data/mcp/memory.jsonl"
+      allow_network: true
+      enabled: true
+
+    - name: "sequential-thinking"
+      transport: "stdio"
+      command: "npx"
+      args: ["-y", "@modelcontextprotocol/server-sequential-thinking"]
+      allow_network: true
+      enabled: true
+
+    - name: "time"
+      transport: "stdio"
+      command: "uvx"
+      args: ["mcp-server-time", "--local-timezone", "Asia/Shanghai"]
+      connect_timeout_seconds: 60
+      enabled: true
+
+    - name: "context7"
+      transport: "stdio"
+      command: "npx"
+      args: ["-y", "@upstash/context7-mcp"]
+      connect_timeout_seconds: 60
+      allow_network: true
+      enabled: true
+
+    - name: "fetch"
+      transport: "stdio"
+      command: "uvx"
+      args: ["mcp-server-fetch"]
+      connect_timeout_seconds: 60
+      allow_network: true
+      enabled: true

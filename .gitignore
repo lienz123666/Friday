@@ -48,9 +48,12 @@ data/*.log
 data/*.txt
 data/*.npy
 
-# Env
+# Env / local overrides
 .env
-config.yaml
+config.yaml.local
+config.yaml.local.bak
+# config.yaml is tracked with placeholders; keep real machine values locally
+# via skip-worktree or a local-only overlay if needed.
 
 # IDE
 .vscode/

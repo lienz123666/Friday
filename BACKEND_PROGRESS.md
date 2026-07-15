@@ -2,6 +2,11 @@
 
 更新时间：2026-07-15 CST
 
+## 2026-07-15：提交占位符版 config.yaml
+
+- 将 `config.yaml` 纳入版本库；embedding/Qdrant URL、sandbox 路径、微信 profile key、MCP 路径等敏感信息改为占位符。
+- 密钥仍只通过 `.env` 注入；从 `.gitignore` 移除对 `config.yaml` 的忽略。
+
 ## 2026-07-15：产品展示名改为 Friday
 
 - 对外产品名由 Lumora 调整为 Friday；README、docs、路线图、示例 system 文案与进度文档已同步。
