@@ -13,7 +13,7 @@
 | 1 | P0 | AD-038 | `execute_code` 是没有真实 OS 隔离的任意代码执行入口，且当前文案会造成错误安全预期。 |
 | 2 | P0 | AD-044 | 已修改（待回归验证）：统一 persistence sanitizer；既有库扫描/加密证据仓仍待补。 |
 | 3 | P0 | AD-006 | 外部工具输出跨 Turn 被重放为用户消息，破坏提示注入防线和审计信任边界。 |
-| 4 | P0 | AD-009 | 延迟工具桥接可丢失原工具的授权、配额、审计和取消上下文。 |
+| 4 | P0 | AD-009 | 已验证：桥接继承执行上下文；配额/审计与 ask-first network 授权回归已通过。 |
 | 5 | P0 | AD-014 | `memory_ingest` 可绕开统一文件 Sandbox 读取并持久化本地数据。 |
 | 6 | P0 | AD-027 | Gateway 命名会话缺少 `chat_id`，可能直接造成跨群聊上下文泄露。 |
 | 7 | P0（回归门） | AD-015 | 外部记忆的 scope 隔离虽已改进，必须先用多用户回归测试证明不会召回他人数据。 |
@@ -333,21 +333,23 @@ agent._iteration_budget -= 1
 
 ## AD-009：工具桥接 `tool_call` 丢失原工具的权限与运行上下文
 
-**状态：** 已确认，优先级高。
+**状态：** 已验证。
 
-**相关代码：** `src/personal_agent/plugins/builtin/tools/bridge/bridge.py` 的 `_tool_call()`。
+**相关代码：** `src/personal_agent/plugins/builtin/tools/bridge/bridge.py` 的 `_tool_call()`；`tools/runtime_context.py`；`tools/executor.py`；`tools/execution_guard.py`；`tools/audit.py`。
 
-### 当前行为
+### 旧版行为
 
-`tool_call` 是给延迟暴露工具使用的桥接工具。外层 `tool_call` 先按自身的 `default` 类别通过 Executor；其 handler 再对目标工具调用 `execute_tool_call_result(...)`，但没有传入当前 `agent`、`hooks`、`event_sink` 或确认回调。
+`tool_call` 是给延迟暴露工具使用的桥接工具。外层 `tool_call` 先按自身的 `default` 类别通过 Executor；其 handler 再对目标工具调用 `execute_tool_call_result(...)`，但没有传入当前 `agent`、`hooks`、`event_sink` 或确认回调。内层在 `agent is None` 时跳过 execution policy、per-turn tool quota、destructive quota 和 grant 匹配，并可把 `web_fetch` 等 network 工具包装进低语义的 `tool_call`，绕开授权；Tool Run 事件和 Turn 统计也不完整。
 
-### 缺陷与影响
+### 新版校正与验证
 
-内层 Executor 在 `agent is None` 时跳过 execution policy、per-turn tool quota、destructive quota 和 grant 匹配。虽然桥接禁止 `is_destructive=True` 的目标工具，仍可把 `web_fetch` 等非破坏性但高权限分类的工具包装进低语义的 `tool_call`，从而绕开原本对 `network` / `background` 等类别的授权要求；相应 Tool Run 事件和 Turn 统计也会不完整。
+- `_run_handler` 通过 ContextVar 注入 `agent` / `confirm` / `event_sink`；`_tool_call` 与 `dispatch_tool_call` 读取后传给内层 `execute_tool_call_result`。
+- 嵌套 `ToolExecutionResult` 经 `preserve_nested_guard` 回写目标工具的 Guard 分类与授权元数据。
+- `tool_call` 的 `counts_toward_quota=False`，外层不再双计 per-turn 配额；目标工具配额与直接调用一致。
+- `audit_tool_result` 优先使用 result 上的 permission 字段，避免外层 wrapper decision 覆盖内层 network/write 分类。
+- 已通过回归：`test_nested_tool_call_cannot_bypass_network_auth_in_ask_first`、`test_nested_tool_call_quota_matches_direct_on_success`、`test_nested_tool_call_audit_records_target_permission_category`，以及既有 confirm/denial 嵌套测试。
 
-### 改造方向与完成标准
-
-桥接调用必须继承并传递外层完整执行上下文；更稳妥的设计是让工具发现后把目标 schema 加入下一次 provider 请求，并由 Agent 直接调用目标工具，而不是进行嵌套执行。无论采用哪种方案，都要保证目标工具的 Guard 分类、确认、配额、审计事件和取消 token 与直接调用完全一致。补充“标准模式下通过 `tool_call` 不能绕过 network 授权”的回归测试。
+后续可选优化（非阻断）：搜索后把目标 schema 临时加入同 Turn 后续 provider 请求，减少对嵌套 `tool_call` 的依赖（见 AD-040）。
 
 ## AD-010：文件工具的资源上限与写入策略不一致
 

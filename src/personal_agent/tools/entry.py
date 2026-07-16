@@ -53,3 +53,6 @@ class ToolEntry:
     idempotent: bool | None = None
     is_parallel_safe: bool = True
     is_destructive: bool = False
+    # Bridge wrappers re-enter the executor for the target tool; only the
+    # target should consume per-turn / destructive quotas.
+    counts_toward_quota: bool = True

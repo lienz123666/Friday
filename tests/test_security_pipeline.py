@@ -170,6 +170,190 @@ async def test_nested_tool_call_preserves_authorization_denial(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_nested_tool_call_cannot_bypass_network_auth_in_ask_first(tmp_path):
+    """AD-009: ask-first / standard mode must still require network approval via tool_call."""
+    import personal_agent.plugins.builtin.tools.bridge.bridge  # noqa: F401
+    import personal_agent.plugins.builtin.tools.builtin.web_search  # noqa: F401
+
+    from personal_agent.conversation.events import EventRecorder
+    from personal_agent.tools.executor import execute_tool_call_result
+
+    called = False
+    confirmations = 0
+
+    async def deny(decision):
+        nonlocal confirmations
+        confirmations += 1
+        assert decision.permission_category == "network"
+        assert decision.tool_name == "web_search"
+        return "deny"
+
+    # Patch handler so a bypass cannot hit the network.
+    from personal_agent.tools.registry import tool_registry
+
+    original = tool_registry.get("web_search")
+    assert original is not None
+
+    async def guarded_handler(**kwargs):
+        nonlocal called
+        called = True
+        return "should not run"
+
+    from personal_agent.tools.entry import ToolEntry
+
+    tool_registry.register(
+        ToolEntry(
+            name=original.name,
+            description=original.description,
+            schema=original.schema,
+            handler=guarded_handler,
+            toolset=original.toolset,
+            permission_category=original.permission_category,
+            tags=list(original.tags),
+            risk_level=original.risk_level,
+            usage_hint=original.usage_hint,
+            approval_mode=original.approval_mode,
+            resource_resolver=original.resource_resolver,
+            is_parallel_safe=original.is_parallel_safe,
+            is_destructive=original.is_destructive,
+        )
+    )
+    agent = _agent(tmp_path, mode="ask-first")
+    recorder = EventRecorder()
+    try:
+        direct = await execute_tool_call_result(
+            {"id": "direct-net", "name": "web_search", "input": {"query": "hello"}},
+            agent=agent,
+            confirm=deny,
+            event_sink=recorder,
+        )
+        direct_quota = agent._tool_calls_this_turn
+        agent._tool_calls_this_turn = 0
+
+        nested = await execute_tool_call_result(
+            {
+                "id": "outer-net",
+                "name": "tool_call",
+                "input": {"name": "web_search", "arguments": {"query": "hello"}},
+            },
+            agent=agent,
+            confirm=deny,
+            event_sink=recorder,
+        )
+        nested_quota = agent._tool_calls_this_turn
+    finally:
+        tool_registry.register(original)
+
+    assert direct.status == nested.status == "denied"
+    assert direct.category == nested.category == "authorization"
+    assert direct.permission_category == nested.permission_category == "network"
+    assert direct.reason_code == nested.reason_code == "security_approval_required"
+    assert direct_quota == nested_quota == 0
+    assert confirmations == 2
+    assert called is False
+
+    inner_decisions = [
+        event
+        for event in recorder.events
+        if event.type == "tool_decision" and event.data.get("tool_name") == "web_search"
+    ]
+    assert len(inner_decisions) >= 2
+    assert all(event.data.get("permission_category") == "network" for event in inner_decisions)
+
+
+@pytest.mark.asyncio
+async def test_nested_tool_call_quota_matches_direct_on_success(tmp_path):
+    import personal_agent.plugins.builtin.tools.bridge.bridge  # noqa: F401
+
+    from personal_agent.tools.entry import ToolEntry
+    from personal_agent.tools.executor import execute_tool_call_result
+    from personal_agent.tools.registry import tool_registry
+
+    async def handler(value: str = "x"):
+        return f"ok:{value}"
+
+    async def confirm(_decision):
+        return "allow"
+
+    entry = ToolEntry(
+        "quota_bridge_demo",
+        "demo",
+        {"type": "object", "properties": {"value": {"type": "string"}}},
+        handler,
+        approval_mode="prompt",
+        idempotent=False,
+    )
+    tool_registry.register(entry)
+    agent = _agent(tmp_path)
+    try:
+        direct = await execute_tool_call_result(
+            {"id": "direct-quota", "name": entry.name, "input": {"value": "a"}},
+            agent=agent,
+            confirm=confirm,
+        )
+        direct_quota = agent._tool_calls_this_turn
+        agent._tool_calls_this_turn = 0
+
+        nested = await execute_tool_call_result(
+            {
+                "id": "outer-quota",
+                "name": "tool_call",
+                "input": {"name": entry.name, "arguments": {"value": "b"}},
+            },
+            agent=agent,
+            confirm=confirm,
+        )
+        nested_quota = agent._tool_calls_this_turn
+    finally:
+        tool_registry.unregister(entry.name)
+
+    assert direct.status == nested.status == "success"
+    assert direct_quota == nested_quota == 1
+
+
+@pytest.mark.asyncio
+async def test_nested_tool_call_audit_records_target_permission_category(tmp_path):
+    import json
+    import personal_agent.plugins.builtin.tools.bridge.bridge  # noqa: F401
+    import personal_agent.plugins.builtin.tools.builtin.web_search  # noqa: F401
+
+    from personal_agent.tools.audit import set_audit_path
+    from personal_agent.tools.executor import execute_tool_call_result
+
+    async def deny(_decision):
+        return "deny"
+
+    audit_path = tmp_path / "audit.log"
+    set_audit_path(audit_path)
+    agent = _agent(tmp_path, mode="ask-first")
+    result = await execute_tool_call_result(
+        {
+            "id": "outer-audit",
+            "name": "tool_call",
+            "input": {"name": "web_search", "arguments": {"query": "audit"}},
+        },
+        agent=agent,
+        confirm=deny,
+    )
+    assert result.status == "denied"
+    assert result.permission_category == "network"
+
+    lines = [
+        json.loads(line)
+        for line in audit_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    outer_results = [
+        item
+        for item in lines
+        if item.get("event") == "tool_result" and item.get("tool") == "tool_call"
+    ]
+    assert outer_results
+    assert outer_results[-1]["permission_category"] == "network"
+    assert outer_results[-1]["reason_code"] == "security_approval_required"
+
+
+@pytest.mark.asyncio
 async def test_prompt_tool_approval_never_persists(tmp_path):
     from personal_agent.tools.entry import ToolEntry
     from personal_agent.tools.executor import execute_tool_call_result

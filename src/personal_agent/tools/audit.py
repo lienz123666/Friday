@@ -89,6 +89,11 @@ def audit_tool_result(result, *, decision=None) -> None:
             if hasattr(decision, "as_dict")
             else dict(decision or {})
         )
+        # Nested bridge results copy target guard fields onto the outer result
+        # before audit; prefer those over the outer wrapper decision.
+        def _field(key: str) -> str:
+            return str(result_data.get(key) or decision_data.get(key, "") or "")
+
         entry = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
             "event": "tool_result",
@@ -96,12 +101,12 @@ def audit_tool_result(result, *, decision=None) -> None:
             "tool_use_id": sanitize_persistence_text(result_data.get("tool_use_id", ""), max_chars=200),
             "status": str(result_data.get("status", "")),
             "category": str(result_data.get("category", "")),
-            "permission_category": str(decision_data.get("permission_category", "")),
-            "execution_mode": str(decision_data.get("execution_mode", "")),
-            "permission_decision": str(decision_data.get("permission_decision", "")),
-            "reason_code": str(decision_data.get("reason_code", "")),
-            "required_allow": str(decision_data.get("required_allow", "")),
-            "grant_matched": str(decision_data.get("grant_matched", "")),
+            "permission_category": _field("permission_category"),
+            "execution_mode": _field("execution_mode"),
+            "permission_decision": _field("permission_decision"),
+            "reason_code": _field("reason_code"),
+            "required_allow": _field("required_allow"),
+            "grant_matched": _field("grant_matched"),
             "duration": float(result_data.get("duration", 0.0) or 0.0),
             "attempts": int(result_data.get("attempts", 0) or 0),
             "input_summary": sanitize_persistence_text(result_data.get("input_summary", ""), max_chars=500),
