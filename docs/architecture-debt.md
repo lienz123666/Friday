@@ -14,7 +14,7 @@
 | 2 | P0 | AD-044 | 已修改（待回归验证）：统一 persistence sanitizer；既有库扫描/加密证据仓仍待补。 |
 | 3 | P0 | AD-006 | 外部工具输出跨 Turn 被重放为用户消息，破坏提示注入防线和审计信任边界。 |
 | 4 | P0 | AD-009 | 已验证：桥接继承执行上下文；配额/审计与 ask-first network 授权回归已通过。 |
-| 5 | P0 | AD-014 | `memory_ingest` 可绕开统一文件 Sandbox 读取并持久化本地数据。 |
+| 5 | P0 | AD-014 | 已验证：`memory_ingest` 已移除；共享 `file_access` 锁定敏感路径旁路。 |
 | 6 | P0 | AD-027 | Gateway 命名会话缺少 `chat_id`，可能直接造成跨群聊上下文泄露。 |
 | 7 | P0（回归门） | AD-015 | 外部记忆的 scope 隔离虽已改进，必须先用多用户回归测试证明不会召回他人数据。 |
 | 8 | P1 | AD-001 | 上下文溢出会导致核心对话请求失败，且缺少可恢复、可解释的闭环。 |
@@ -443,17 +443,20 @@ Agent 创建时会将 FileMemoryProvider 的 `data/system/*.md` 内容拼入 `_c
 
 ## AD-014：`memory_ingest` 绕过统一文件 Sandbox
 
-**状态：** 已确认，优先级高。
+**状态：** 已验证。
 
-**相关代码：** `src/personal_agent/plugins/builtin/memory/file/provider.py` 的 `_memory_ingest()` 与对应 `ToolEntry`。
+**相关代码：** 旧入口已删除；共享受控读取见 `src/personal_agent/tools/file_access.py`；`read` 工具见 `plugins/builtin/tools/builtin/file_read.py`。
 
-### 当前行为
+### 旧版行为
 
-`memory_ingest(path)` 直接将模型提供的路径交给 external memory provider，后者使用 `Path(file_path)` 读取文本、PDF 或 docx。该 ToolEntry 未设置 `precheck`、未调用 `Sandbox.resolve/check_path`，也未使用 `read` 权限类别。
+`memory_ingest(path)` 直接将模型提供的路径交给 external memory provider，后者使用 `Path(file_path)` 读取文本、PDF 或 docx。该 ToolEntry 未设置 `precheck`、未调用 `Sandbox.resolve/check_path`，也未使用 `read` 权限类别。即使普通 `read` 会拒绝 sandbox root 外路径，模型仍可经由 ingest 读取并持久化任意本地文件。
 
-### 缺陷与影响
+### 新版校正与验证
 
-即使普通 `read` 工具会拒绝 sandbox root 外的路径，模型仍可经由 `memory_ingest` 读取并嵌入任意本地可访问文件；内容随后会持久化到外部记忆，扩大了敏感数据泄漏面。这绕过了项目声明的统一文件访问边界。
+- 产品方向不再恢复 Agent 可调用的 `memory_ingest`（知识 RAG 将作为独立插件）；当前 `memory` 工具仅支持 `add/search/list/delete/history`，无 `path`/`ingest`。
+- 新增共享受控读取 seam：`resolve_readable_path` / `file_read_precheck` / `read_sandboxed_text` / `extract_sandboxed_document`。任何未来文件→记忆/RAG 摄取必须先经此 API，禁止 provider 接收裸路径。
+- `read` 工具改为使用同一 seam，并挂上 Guard 前 `precheck`（`permission_category="read"`）。
+- 回归：`tests/test_memory_ingest_sandbox.py` 覆盖工具未注册、`.env`/`.ssh`/root 外拒绝、workspace 允许、符号链接逃逸（环境允许时）、以及“裸 `Path.read_text` 会成功但共享 seam 必须拒绝”的对照。
 
 ### 改造方向与完成标准
 
