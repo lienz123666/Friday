@@ -1,33 +1,22 @@
 """Read files within sandbox boundaries.
 
-Security is enforced by the unified sandbox (roots + blocked patterns).
+Security is enforced by the unified sandbox (roots + blocked patterns)
+via the shared file_access helpers — the same seam future ingest/RAG must use.
 """
 
 from personal_agent.tools.entry import ToolEntry
+from personal_agent.tools.file_access import (
+    DEFAULT_MAX_READ_CHARS,
+    file_read_precheck,
+    read_sandboxed_text,
+)
 from personal_agent.tools.registry import tool_registry
-from personal_agent.tools.sandbox import get_sandbox
 
-MAX_READ_BYTES = 50_000
+MAX_READ_BYTES = DEFAULT_MAX_READ_CHARS
 
 
 async def _file_read(path: str) -> str:
-    try:
-        sandbox = get_sandbox()
-        full = sandbox.resolve(path)
-        error = sandbox.check_path(full)
-        if error:
-            return error
-
-        if not full.exists():
-            return f"Error: file not found: {path}"
-        if full.is_dir():
-            return f"Error: '{path}' is a directory"
-        content = full.read_text(encoding="utf-8", errors="replace")
-        if len(content) > MAX_READ_BYTES:
-            content = content[:MAX_READ_BYTES] + f"\n\n...(truncated {len(content) - MAX_READ_BYTES} bytes)"
-        return content
-    except Exception as e:
-        return f"Error: {e}"
+    return read_sandboxed_text(path, max_chars=MAX_READ_BYTES)
 
 
 tool_registry.register(ToolEntry(
@@ -46,4 +35,5 @@ tool_registry.register(ToolEntry(
     tags=["file", "read"],
     risk_level="low",
     usage_hint="Use to inspect a known file path before editing or summarizing it.",
+    precheck=file_read_precheck,
 ))
