@@ -391,6 +391,9 @@ def check_runtime_guard(tc: dict, entry: Any, agent: Any, category: str) -> Guar
     if agent is None:
         return GuardDecision(stage="runtime_guard", allowed=True, category=category)
 
+    if not getattr(entry, "counts_toward_quota", True):
+        return GuardDecision(stage="runtime_guard", allowed=True, category=category)
+
     if agent._tool_calls_this_turn >= agent._max_tool_calls_per_turn:
         return GuardDecision(
             stage="runtime_guard",
