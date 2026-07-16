@@ -1,6 +1,19 @@
-"""Gateway session key routing."""
+"""Gateway session key routing.
+
+Session keys are scoped by platform chat so the same logical name in two
+group chats never shares transcript, security grants, or memory scope.
+
+  base:  {platform}:{chat_id}:{user_id}
+  named: {platform}:{chat_id}:{name}:{user_id}
+"""
 
 from __future__ import annotations
+
+
+def clean_session_name(name: str) -> str:
+    """Normalize a user-facing session name for use inside a session key."""
+    cleaned = (name or "default").strip().replace(":", "_")
+    return cleaned or "default"
 
 
 class GatewaySessionRouter:
@@ -15,7 +28,9 @@ class GatewaySessionRouter:
         return self.overrides.get(base_key, base_key)
 
     def named_key(self, source, name: str) -> str:
-        return f"{source.platform}:{name}:{source.user_id}"
+        # Include chat_id so /session switch <name> stays per-chat (AD-027).
+        safe_name = clean_session_name(name)
+        return f"{source.platform}:{source.chat_id}:{safe_name}:{source.user_id}"
 
     def switch(self, source, name: str) -> str:
         new_key = self.named_key(source, name)

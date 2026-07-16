@@ -113,9 +113,34 @@ async def test_gateway_session_command_uses_shared_service(gateway):
 
     result = await gateway._handle_command(event, "telegram:c1:u1")
 
-    assert result == "会话已切换: telegram:work:u1"
-    listed = await gateway._handle_command(_event("/session list"), "telegram:work:u1")
-    assert "telegram:work:u1" in listed
+    assert result == "会话已切换: telegram:c1:work:u1"
+    listed = await gateway._handle_command(_event("/session list"), "telegram:c1:work:u1")
+    assert "telegram:c1:work:u1" in listed
+
+
+@pytest.mark.asyncio
+async def test_gateway_named_session_does_not_leak_across_chats(gateway):
+    """AD-027: same user switching to 'work' in two chats must keep separate stores."""
+    chat_a = _event("/session work", chat_id="group-a")
+    chat_b = _event("/session work", chat_id="group-b")
+
+    switched_a = await gateway._handle_command(chat_a, "telegram:group-a:u1")
+    switched_b = await gateway._handle_command(chat_b, "telegram:group-b:u1")
+
+    key_a = "telegram:group-a:work:u1"
+    key_b = "telegram:group-b:work:u1"
+    assert switched_a == f"会话已切换: {key_a}"
+    assert switched_b == f"会话已切换: {key_b}"
+    assert key_a != key_b
+
+    entry_a = gateway._session_store.get(key_a)
+    entry_b = gateway._session_store.get(key_b)
+    assert entry_a is not None and entry_b is not None
+    assert entry_a.session_id != entry_b.session_id
+    assert entry_a.chat_id == "group-a"
+    assert entry_b.chat_id == "group-b"
+    assert gateway._session_override["telegram:group-a:u1"] == key_a
+    assert gateway._session_override["telegram:group-b:u1"] == key_b
 
 
 @pytest.mark.asyncio
@@ -153,7 +178,7 @@ async def test_gateway_regular_message_uses_active_session_key(gateway, monkeypa
     result = await gateway._handle_message_inner(_event("hello"))
 
     assert result == "ok"
-    assert captured == [("telegram:work:u1", "hello")]
+    assert captured == [("telegram:c1:work:u1", "hello")]
 
 
 @pytest.mark.asyncio
@@ -320,27 +345,27 @@ async def test_gateway_session_current_rename_and_delete(gateway):
 
     current = await gateway._handle_command(_event("/session current"), "telegram:c1:u1")
     renamed = await gateway._handle_command(_event("/session rename renamed"), "telegram:c1:u1")
-    listed = await gateway._handle_command(_event("/session list"), "telegram:renamed:u1")
-    deleted = await gateway._handle_command(_event("/session delete current"), "telegram:renamed:u1")
+    listed = await gateway._handle_command(_event("/session list"), "telegram:c1:renamed:u1")
+    deleted = await gateway._handle_command(_event("/session delete current"), "telegram:c1:renamed:u1")
 
     assert "session id" in current
-    assert "telegram:renamed:u1" in renamed
-    assert "telegram:renamed:u1" in listed
-    assert "会话已删除: telegram:renamed:u1" in deleted
-    assert "telegram:renamed:u1" not in gateway._agent_cache
+    assert "telegram:c1:renamed:u1" in renamed
+    assert "telegram:c1:renamed:u1" in listed
+    assert "会话已删除: telegram:c1:renamed:u1" in deleted
+    assert "telegram:c1:renamed:u1" not in gateway._agent_cache
     assert gateway._session_override.get("telegram:c1:u1") is None
 
 
 @pytest.mark.asyncio
 async def test_gateway_delete_named_session_without_switching(gateway):
     await gateway._handle_command(_event("/session work"), "telegram:c1:u1")
-    gateway._agent_cache["telegram:work:u1"] = Agent()
+    gateway._agent_cache["telegram:c1:work:u1"] = Agent()
 
     result = await gateway._handle_command(_event("/session delete work"), "telegram:c1:u1")
 
-    assert "会话已删除: telegram:work:u1" in result
-    assert "telegram:work:u1" not in gateway._agent_cache
-    assert gateway._session_store.get("telegram:work:u1") is None
+    assert "会话已删除: telegram:c1:work:u1" in result
+    assert "telegram:c1:work:u1" not in gateway._agent_cache
+    assert gateway._session_store.get("telegram:c1:work:u1") is None
 
 
 @pytest.mark.asyncio
@@ -1255,7 +1280,7 @@ async def test_gateway_usage_does_not_create_agent(gateway):
 @pytest.mark.asyncio
 async def test_gateway_removed_allow_is_unhandled_and_stop_applies_to_cached_agents(gateway):
     gateway._agent_cache["telegram:c1:u1"] = Agent()
-    gateway._agent_cache["telegram:work:u1"] = Agent()
+    gateway._agent_cache["telegram:c1:work:u1"] = Agent()
 
     allowed = await gateway._handle_command(_event("/allow write"), "telegram:c1:u1")
     stopped = await gateway._handle_command(_event("/stop"), "telegram:c1:u1")

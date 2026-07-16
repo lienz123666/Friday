@@ -15,7 +15,7 @@
 | 3 | P0 | AD-006 | 外部工具输出跨 Turn 被重放为用户消息，破坏提示注入防线和审计信任边界。 |
 | 4 | P0 | AD-009 | 延迟工具桥接可丢失原工具的授权、配额、审计和取消上下文。 |
 | 5 | P0 | AD-014 | `memory_ingest` 可绕开统一文件 Sandbox 读取并持久化本地数据。 |
-| 6 | P0 | AD-027 | Gateway 命名会话缺少 `chat_id`，可能直接造成跨群聊上下文泄露。 |
+| 6 | P0 | AD-027 | 已验证：命名会话 key 含 `chat_id`，同名跨群聊不再共享上下文。 |
 | 7 | P0（回归门） | AD-015 | 外部记忆的 scope 隔离虽已改进，必须先用多用户回归测试证明不会召回他人数据。 |
 | 8 | P1 | AD-001 | 上下文溢出会导致核心对话请求失败，且缺少可恢复、可解释的闭环。 |
 | 9 | P1 | AD-005 | 会话、压缩链与观测数据跨存储非原子，崩溃时可能产生不可恢复的不一致。 |
@@ -661,17 +661,21 @@ Workflow Engine 的 LLM transport、工具列表和最大 token 是进程级全�
 
 ## AD-027：Gateway 命名会话 key 丢失 `chat_id`，可能跨群聊共享上下文
 
-**状态：** 已确认，优先级高（隐私/隔离）。
+**状态：** 已验证。
 
 **相关代码：** `src/personal_agent/gateway/session_router.py` 的 `base_key()` 与 `named_key()`。
 
-### 当前行为与影响
+### 旧版行为与影响
 
-默认基础 key 为 `platform:chat_id:user_id`，因此同一用户在不同群聊默认隔离；但 `/session switch <name>` 生成的命名 key 是 `platform:name:user_id`，没有 `chat_id`。同一用户在两个群聊中选用相同名称时，会进入同一个 SessionStore 会话，也共享同一 `SecurityStateStore` 状态、MemoryScope 的 session key 以及可能的工具授权。除非产品明确声明“命名会话按用户跨聊天共享”，这与默认群聊隔离语义冲突，并存在上下文和隐私泄漏风险。
+默认基础 key 为 `platform:chat_id:user_id`，因此同一用户在不同群聊默认隔离；但 `/session switch <name>` 生成的命名 key 是 `platform:name:user_id`，没有 `chat_id`。同一用户在两个群聊中选用相同名称时，会进入同一个 SessionStore 会话，也共享同一 `SecurityStateStore` 状态、MemoryScope 的 session key 以及可能的工具授权。
 
-### 改造方向与完成标准
+### 新版校正与验证
 
-明确命名会话的 scope。若按聊天隔离，key 必须包含 chat_id，例如 `platform:chat_id:name:user_id`；若确需跨聊天共享，需使用显式的用户级 session 类型、UI 提示和更严格的群聊授权策略。补充同一用户两个 chat 使用同名会话时不会意外共享的回归测试。
+- 命名会话改为按聊天隔离：`platform:chat_id:name:user_id`（名称中的 `:` 会被清洗为 `_`）。
+- 基础会话仍为 `platform:chat_id:user_id`；overrides 仍以 base key 为索引，因此两个群聊的同名切换互不影响。
+- 回归：`test_named_sessions_with_same_name_are_isolated_across_chats`、`test_gateway_named_session_does_not_leak_across_chats`。
+
+若未来需要显式的用户级跨聊天共享会话，应另设 session 类型与 UI/授权策略，而不是回退到缺少 `chat_id` 的命名 key。
 
 ## AD-028：Slash Command 元数据注册表与实际分发逻辑双维护
 
