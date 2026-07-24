@@ -16,7 +16,7 @@
 | 4 | P0 | AD-009 | 已验证：桥接继承执行上下文；配额/审计与 ask-first network 授权回归已通过。 |
 | 5 | P0 | AD-014 | 已验证：`memory_ingest` 已移除；共享 `file_access` 锁定敏感路径旁路。 |
 | 6 | P0 | AD-027 | 已验证：命名会话 key 含 `chat_id`，同名跨群聊不再共享上下文。 |
-| 7 | P0（回归门） | AD-015 | 外部记忆的 scope 隔离虽已改进，必须先用多用户回归测试证明不会召回他人数据。 |
+| 7 | P0（回归门） | AD-015 | 已验证：`tests/test_memory_scope_isolation.py` 多 user/profile 隔离 + Gateway session_key 解析。 |
 | 8 | P1 | AD-001 | 上下文溢出会导致核心对话请求失败，且缺少可恢复、可解释的闭环。 |
 | 9 | P1 | AD-005 | 会话、压缩链与观测数据跨存储非原子，崩溃时可能产生不可恢复的不一致。 |
 | 10 | P1 | AD-008 | 进程级取消状态会让一个 session 的 `/stop` 影响另一个 session。 |
@@ -466,9 +466,9 @@ Agent 创建时会将 FileMemoryProvider 的 `data/system/*.md` 内容拼入 `_c
 
 ## AD-015：Embedding 外部记忆缺少用户/session/profile 隔离
 
-**状态：** 已修改（待回归验证）。
+**状态：** 已验证（`tests/test_memory_scope_isolation.py`：Archive BM25、Router/Manager prefetch、Gateway `session_key`→`user_id`、Qdrant filter 在有 `qdrant_client` 时断言）。
 
-**相关代码：** `src/personal_agent/plugins/builtin/memory/embedding/provider.py` 与 `MemoryManager`。
+**相关代码：** `memory/models.py::MemoryScope`、`memory/archive.py::_scope_key`、`memory/manager.py::prefetch`、`plugins/builtin/memory/lumora/qdrant_store.py`、`gateway/session_router.py`。
 
 ### 旧版行为
 
@@ -480,11 +480,16 @@ EmbeddingMemoryProvider 将所有条目保存到同一份 `external_memories.jso
 
 ### 新版校正
 
-最新版以 `MemoryScope` 贯穿 `MemoryManager`、router、archive 与 provider；SQLite 的 observations、memories、FTS、review checkpoint 与 buffer 均使用 scope key 过滤。默认持久化 scope 是 `agent_id:user_id:profile`：同一用户同一 profile 的不同会话可共享长期记忆，不同用户或 profile 不会互相检索。Router 的运行态额外以 `(user_id, session_key, profile)` 隔离。仍需端到端测试验证 primary provider（如 Qdrant/Mem0）也严格使用相同 scope filter，且 session key 解析不会将不同平台用户错误归并。
+最新版以 `MemoryScope` 贯穿 `MemoryManager`、router、archive 与 provider；SQLite 的 observations、memories、FTS、review checkpoint 与 buffer 均使用 scope key 过滤。默认持久化 scope 是 `agent_id:user_id:profile`：同一用户同一 profile 的不同会话可共享长期记忆，不同用户或 profile 不会互相检索。Router 的运行态额外以 `(user_id, session_key, profile)` 隔离。
+
+### 回归测试
+
+- `tests/test_memory_scope_isolation.py`（双 user 相似 BM25/prefetch 互不召回；profile 隔离；Gateway `session_key`→`user_id`；安装 `qdrant_client` 时校验 vector filter）
+- 可选手工：双 Gateway 账号 + 唯一标记串（`SECURITY_TEST_CHECKLIST.md` §5）
 
 ### 改造方向与完成标准
 
-Memory entry 必须携带 owner/scope metadata，并将 session/user/profile scope 显式传入 save、prefetch、search、delete；检索必须先执行访问域过滤再按相似度排序。默认 scope 应是 platform user 或 profile，跨用户共享只能显式授权。补充两个用户写入相似记忆而互不召回的隔离测试。
+Memory entry 必须携带 owner/scope metadata，并将 session/user/profile scope 显式传入 save、prefetch、search、delete；检索必须先执行访问域过滤再按相似度排序。默认 scope 应是 platform user 或 profile，跨用户共享只能显式授权。
 # AD-016：MemoryReview 只由 Gateway 启动，CLI 路径丢失后台复盘
 
 **状态：** 已修改（待回归验证）。

@@ -199,7 +199,15 @@ uv run personal-agent doctor --verbose
 
 ## 5. Memory 回归
 
+自动化（提交前）：`uv run pytest tests/test_memory_scope_isolation.py -q`（AD-015 多 user/profile 隔离）。
+
 使用现有会话执行一次记忆搜索，不要删除、迁移或重建记忆。
+
+**AD-015 多用户手工（双平台账号时）**
+
+1. 账号 A 写入带唯一标记的事实（如 `AD015-MANUAL-A-<随机>`），可用 `memory` add 或自然对话 review。
+2. 账号 B 对相同主题 `memory search`，或发送会触发 prefetch 的消息。
+3. 预期：B 的结果与注入块中 **不得** 出现 A 的标记串。
 
 预期：
 

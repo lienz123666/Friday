@@ -2,6 +2,11 @@
 
 更新时间：2026-07-25 CST
 
+## 2026-07-25：AD-015 外部记忆多用户隔离回归
+
+- 新增 `tests/test_memory_scope_isolation.py`：Archive BM25 跨 `user_id`/`profile` 不泄漏；Router + `MemoryManager.prefetch` 双用户相似内容隔离；Gateway `session_key` 末段解析为 platform `user_id`；Qdrant 检索 filter（需 `qdrant_client` 时运行，否则 skip）。
+- `docs/architecture-debt.md` AD-015 标为已验证。
+
 ## 2026-07-25：P0 安全批次合并（AD-038 / AD-044 / AD-006）
 
 - **AD-038（phase-1）**：`execute_code` 在无 OS 级隔离时 **fail-closed**（precheck + handler）；保留 `tools/code_runner.py` seam 供后续 Adapter。任意 Python 需经授权的 `bash` + 白名单路径，不再经伪沙箱工具。
