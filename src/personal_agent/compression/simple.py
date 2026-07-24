@@ -14,6 +14,7 @@ from typing import Any
 
 from personal_agent.compression.base import ContextEngine
 from personal_agent.compression.registry import compression_registry
+from personal_agent.conversation.history_events import build_system_summary_api_message
 from personal_agent.llm.provider import ProviderProfile
 from personal_agent.llm.token_counter import count_messages_tokens, count_tools_tokens
 
@@ -102,10 +103,7 @@ class ContextCompressor(ContextEngine):
             return messages
 
         # Measure effectiveness
-        summary_msg = {
-            "role": "user",
-            "content": [{"type": "text", "text": f"[系统生成的对话历史摘要]\n{summary}"}],
-        }
+        summary_msg = build_system_summary_api_message(summary)
         compressed = head + [summary_msg] + tail
         after_tokens = count_messages_tokens(compressed, model=self.model) + count_messages_tokens([], system_prompt, model=self.model)
 

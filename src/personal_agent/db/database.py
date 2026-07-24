@@ -125,6 +125,7 @@ class Database:
         self._conn.row_factory = aiosqlite.Row
         await self._conn.executescript(SCHEMA)
         await self._ensure_tool_run_columns()
+        await self._ensure_message_columns()
         await self._conn.commit()
         logger.info("Database initialized at %s", self._path)
 
@@ -137,6 +138,17 @@ class Database:
             "temporary_grant_ttl_seconds": "ALTER TABLE tool_runs ADD COLUMN temporary_grant_ttl_seconds INTEGER DEFAULT 0",
             "artifact_summary_json": "ALTER TABLE tool_runs ADD COLUMN artifact_summary_json TEXT DEFAULT '[]'",
             "result_metadata_json": "ALTER TABLE tool_runs ADD COLUMN result_metadata_json TEXT DEFAULT '{}'",
+        }.items():
+            if name not in columns:
+                await self._conn.execute(ddl)
+
+    async def _ensure_message_columns(self) -> None:
+        rows = await self._conn.execute("PRAGMA table_info(messages)")
+        columns = {row["name"] async for row in rows}
+        for name, ddl in {
+            "event_type": "ALTER TABLE messages ADD COLUMN event_type TEXT DEFAULT ''",
+            "trust_level": "ALTER TABLE messages ADD COLUMN trust_level TEXT DEFAULT ''",
+            "origin": "ALTER TABLE messages ADD COLUMN origin TEXT DEFAULT ''",
         }.items():
             if name not in columns:
                 await self._conn.execute(ddl)
@@ -216,65 +228,144 @@ class Database:
         tool_calls: list[dict] | None = None,
         tool_name: str | None = None,
         tool_call_id: str | None = None,
+        *,
+        event_type: str = "",
+        trust_level: str = "",
+        origin: str = "",
     ) -> None:
+        from personal_agent.conversation.history_events import (
+            EVENT_ASSISTANT_TEXT,
+            EVENT_SYSTEM_SUMMARY,
+            EVENT_TOOL_CALL,
+            EVENT_TOOL_RESULT,
+            EVENT_USER_INPUT,
+            ORIGIN_ASSISTANT,
+            ORIGIN_COMPRESSION,
+            ORIGIN_USER,
+            TRUST_SYSTEM,
+            TRUST_TOOL_OUTPUT,
+            TRUST_TRUSTED_USER,
+            is_system_summary_text,
+            legacy_row_to_event,
+        )
+
         content = sanitize_persistence_text(content)
+        tc_json = (
+            json.dumps(sanitize_persistence_payload(tool_calls), ensure_ascii=False)
+            if tool_calls else None
+        )
+        if not event_type:
+            if tool_call_id:
+                event_type = EVENT_TOOL_RESULT
+                trust_level = TRUST_TOOL_OUTPUT
+                origin = f"tool:{tool_name or 'unknown'}"
+            elif tool_name or tool_calls:
+                event_type = EVENT_TOOL_CALL
+                trust_level = TRUST_SYSTEM
+                origin = ORIGIN_ASSISTANT
+            elif role == "assistant":
+                event_type = EVENT_ASSISTANT_TEXT
+                trust_level = TRUST_SYSTEM
+                origin = ORIGIN_ASSISTANT
+            elif role == "system" or is_system_summary_text(content):
+                event_type = EVENT_SYSTEM_SUMMARY
+                trust_level = TRUST_SYSTEM
+                origin = ORIGIN_COMPRESSION if is_system_summary_text(content) else ORIGIN_ASSISTANT
+            elif role == "user":
+                event_type = EVENT_USER_INPUT
+                trust_level = TRUST_TRUSTED_USER
+                origin = ORIGIN_USER
+            else:
+                inferred = legacy_row_to_event(
+                    {
+                        "role": role,
+                        "content": content,
+                        "tool_name": tool_name,
+                        "tool_call_id": tool_call_id,
+                        "tool_calls": tool_calls,
+                        "event_type": "",
+                        "trust_level": "",
+                        "origin": "",
+                    }
+                )
+                event_type = inferred.event_type
+                trust_level = inferred.trust_level
+                origin = inferred.origin
+        async with self._write_lock:
+            await self._conn.execute(
+                """INSERT INTO messages (
+                       session_id, role, content, tool_calls, tool_name, tool_call_id,
+                       event_type, trust_level, origin, timestamp
+                   )
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    role,
+                    content,
+                    tc_json,
+                    tool_name,
+                    tool_call_id,
+                    event_type,
+                    trust_level,
+                    origin,
+                    time.time(),
+                ),
+            )
+            await self._conn.commit()
+
+    async def save_conversation_event(self, session_id: str, event) -> None:
+        from personal_agent.conversation.history_events import ConversationHistoryEvent
+
+        if not isinstance(event, ConversationHistoryEvent):
+            raise TypeError("event must be ConversationHistoryEvent")
+        content = sanitize_persistence_text(event.content)
+        tool_calls = event.tool_calls
         tc_json = (
             json.dumps(sanitize_persistence_payload(tool_calls), ensure_ascii=False)
             if tool_calls else None
         )
         async with self._write_lock:
             await self._conn.execute(
-                """INSERT INTO messages (session_id, role, content, tool_calls, tool_name, tool_call_id, timestamp)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (session_id, role, content, tc_json, tool_name, tool_call_id, time.time()),
+                """INSERT INTO messages (
+                       session_id, role, content, tool_calls, tool_name, tool_call_id,
+                       event_type, trust_level, origin, timestamp
+                   )
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id,
+                    event.storage_role(),
+                    content,
+                    tc_json,
+                    event.tool_name,
+                    event.tool_use_id,
+                    event.event_type,
+                    event.trust_level,
+                    event.origin,
+                    time.time(),
+                ),
             )
             await self._conn.commit()
 
-    async def load_history(self, session_id: str) -> list[dict]:
-        """Load conversation history. Tool messages are converted to plain text.
+    async def load_conversation_events(self, session_id: str) -> list:
+        from personal_agent.conversation.history_events import ConversationHistoryEvent, legacy_row_to_event
 
-        Anthropic API requires tool_use blocks in assistant messages to be
-        immediately followed by tool_result blocks in a user message. If stored
-        history were replayed as-is, missing or misordered tool_results cause
-        400 errors. Instead, we convert tool interactions to natural text.
-        """
         rows = await self._conn.execute(
-            "SELECT role, content, tool_name, tool_call_id "
-            "FROM messages WHERE session_id = ? ORDER BY id",
+            """SELECT role, content, tool_calls, tool_name, tool_call_id,
+                      event_type, trust_level, origin
+               FROM messages WHERE session_id = ? ORDER BY id""",
             (session_id,),
         )
-        messages: list[dict] = []
+        events: list[ConversationHistoryEvent] = []
         async for row in rows:
-            role = row["role"]
-            text = clean_text(row["content"] or "").strip()
+            events.append(legacy_row_to_event(row))
+        return events
 
-            if row["tool_name"]:
-                # Assistant message with tool_use — keep text, skip tool_use block
-                if text:
-                    messages.append({
-                        "role": "assistant",
-                        "content": [{"type": "text", "text": text}],
-                    })
-                # Pure tool_use (no text) → skip entirely
-                continue
+    async def load_history(self, session_id: str, *, api_mode: str = "chat_completions") -> list[dict]:
+        """Rebuild provider-facing messages from canonical persisted events."""
+        from personal_agent.conversation.history_events import events_to_api_messages
 
-            if row["tool_call_id"]:
-                # Tool_result → convert to plain user text
-                if text:
-                    messages.append({
-                        "role": "user",
-                        "content": [{"type": "text", "text": text}],
-                    })
-                continue
-
-            # Normal text message
-            if text:
-                messages.append({
-                    "role": role,
-                    "content": [{"type": "text", "text": text}],
-                })
-
-        return messages
+        events = await self.load_conversation_events(session_id)
+        return events_to_api_messages(events, api_mode=api_mode)
 
     async def get_message_count(self, session_id: str) -> int:
         row = await self._conn.execute(
@@ -290,34 +381,34 @@ class Database:
         Each line: {"role": "user|assistant", "content": "text"}
         Returns the number of messages exported.
         """
-        rows = await self._conn.execute(
-            "SELECT role, content, tool_calls, tool_name, tool_call_id "
-            "FROM messages WHERE session_id = ? ORDER BY id",
-            (session_id,),
-        )
         from pathlib import Path
+
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+        events = await self.load_conversation_events(session_id)
         count = 0
         with open(output_path, "w", encoding="utf-8") as f:
-            async for row in rows:
-                role = row["role"]
-                # Skip tool messages
-                if row["tool_call_id"] or row["tool_name"]:
+            for event in events:
+                content = sanitize_persistence_text(event.content)
+                if not content.strip() and event.event_type not in {
+                    "tool_call",
+                    "tool_result",
+                }:
                     continue
-                # Extract text from content blocks
-                try:
-                    blocks = json.loads(row["content"])
-                    if isinstance(blocks, list):
-                        texts = [b.get("text", "") for b in blocks if isinstance(b, dict) and b.get("type") == "text"]
-                        content = " ".join(texts)
-                    else:
-                        content = str(blocks)
-                except (json.JSONDecodeError, TypeError):
-                    content = str(row["content"])
-                content = sanitize_persistence_text(content)
-                if not content.strip():
-                    continue
-                f.write(json.dumps({"role": role, "content": content}, ensure_ascii=False) + "\n")
+                f.write(
+                    json.dumps(
+                        {
+                            "event_type": event.event_type,
+                            "trust_level": event.trust_level,
+                            "origin": event.origin,
+                            "role": event.storage_role(),
+                            "content": content,
+                            "tool_name": event.tool_name,
+                            "tool_use_id": event.tool_use_id,
+                        },
+                        ensure_ascii=False,
+                    )
+                    + "\n"
+                )
                 count += 1
         return count
 

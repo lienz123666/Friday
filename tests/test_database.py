@@ -62,14 +62,17 @@ def test_tool_use_roundtrip(db):
 
 
 def test_tool_result_roundtrip(db):
-    """Tool result converted to plain user text."""
+    """Tool results reload with explicit trust wrapper for chat completions."""
     sid = str(uuid.uuid4())
     _run(db.create_session_direct(sid, "test:1:1"))
-    _run(db.save_message(sid, "user", content="2", tool_call_id="c1"))
+    _run(db.save_message(sid, "user", content="2", tool_call_id="c1", tool_name="calc"))
 
-    history = _run(db.load_history(sid))
+    history = _run(db.load_history(sid, api_mode="chat_completions"))
     assert len(history) == 1
-    assert history[0]["content"][0]["text"] == "2"
+    assert "2" in history[0]["content"][0]["text"]
+    from personal_agent.conversation.history_events import TOOL_RESULT_DISCLAIMER
+
+    assert TOOL_RESULT_DISCLAIMER in history[0]["content"][0]["text"]
 
 
 def test_full_conversation_roundtrip(db):
@@ -83,11 +86,14 @@ def test_full_conversation_roundtrip(db):
     _run(db.save_message(sid, "user", content="2", tool_call_id="c1"))
     _run(db.save_message(sid, "assistant", content="1+1 = 2"))
 
-    history = _run(db.load_history(sid))
+    history = _run(db.load_history(sid, api_mode="chat_completions"))
     assert len(history) == 4  # all messages loaded as text
     assert history[0]["content"][0]["text"] == "what is 1+1?"
     assert history[1]["content"][0]["text"] == "let me check"  # tool_use stripped
-    assert history[2]["content"][0]["text"] == "2"             # tool_result → text
+    from personal_agent.conversation.history_events import TOOL_RESULT_DISCLAIMER
+
+    assert TOOL_RESULT_DISCLAIMER in history[2]["content"][0]["text"]
+    assert "2" in history[2]["content"][0]["text"]
     assert history[3]["content"][0]["text"] == "1+1 = 2"
 
 

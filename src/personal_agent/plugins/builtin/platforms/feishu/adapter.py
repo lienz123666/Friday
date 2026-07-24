@@ -133,6 +133,9 @@ class FeishuAdapter(BasePlatformAdapter):
             with suppress(asyncio.CancelledError):
                 await self._health_check_task
             self._health_check_task = None
+        for chat_id in list(self._debounce_buffers):
+            self._cancel_debounce_timer(chat_id)
+        self._debounce_buffers.clear()
         if self._stop_event is not None:
             self._stop_event.set()
         if self._ws_client:
@@ -287,6 +290,11 @@ class FeishuAdapter(BasePlatformAdapter):
 
             # sender_id is a UserId object with open_id/union_id/user_id attrs
             sender = inner.sender
+            sender_type = str(getattr(sender, "sender_type", "") or "").lower()
+            if sender_type in {"bot", "app"}:
+                logger.debug("Feishu event dropped: sender_type=%s", sender_type or "bot")
+                return
+
             user_id = ""
             if sender and sender.sender_id:
                 uid = sender.sender_id
@@ -364,37 +372,75 @@ class FeishuAdapter(BasePlatformAdapter):
         return False
 
     def _debounce(self, chat_id: str, text: str, source_info: dict | None = None) -> str | None:
-        """Merge rapid-fire messages from same chat within DEBOUNCE_WINDOW seconds.
-        First message passes through immediately; subsequent ones accumulate.
-        When window expires, the accumulated text is sent as one merged message.
+        """Merge rapid-fire follow-ups without replaying already-delivered text.
+
+        - First message in a window is delivered immediately.
+        - Later messages inside DEBOUNCE_WINDOW are queued as ``pending``.
+        - When the window ends, only ``pending`` is flushed (never the first
+          message again). A stale buffer cannot resurrect ancient texts when a
+          new message arrives hours later.
         """
         now = time.time()
         buf = self._debounce_buffers.get(chat_id)
 
+        if buf is not None and now - float(buf.get("first_at", now)) >= self._DEBOUNCE_WINDOW:
+            # Previous window already ended; flush undelivered follow-ups only.
+            self._cancel_debounce_timer(chat_id)
+            pending = list(buf.get("pending") or [])
+            source = dict(buf.get("source_info") or {})
+            self._debounce_buffers.pop(chat_id, None)
+            if pending:
+                accumulated = "\n".join(pending)
+                loop = asyncio.get_running_loop()
+                loop.call_soon(
+                    lambda a=accumulated, s=source: asyncio.ensure_future(
+                        self._fire_debounced(a, s)
+                    )
+                )
+            buf = None
+
         if buf is None:
-            # First message in potential burst — pass through, schedule flush
             self._debounce_buffers[chat_id] = {
-                "texts": [text],
+                "pending": [],
                 "first_at": now,
                 "source_info": source_info or {},
+                "timer": None,
             }
-            return text  # Process immediately
+            self._schedule_debounce_flush(chat_id)
+            return text
 
-        elapsed = now - buf["first_at"]
-        if elapsed < self._DEBOUNCE_WINDOW:
-            # Still within window — accumulate, don't fire
-            buf["texts"].append(text)
-            return ""  # Absorbed into buffer
+        buf["pending"].append(text)
+        if source_info:
+            buf["source_info"] = source_info
+        return ""
 
-        # Window elapsed since first message — flush old buffer, start new one
-        accumulated = "\n".join(buf.pop("texts", [text]))
-        buf["texts"] = [text]
-        buf["first_at"] = now
-        # Fire accumulated text as a synthetic MessageEvent
+    def _cancel_debounce_timer(self, chat_id: str) -> None:
+        buf = self._debounce_buffers.get(chat_id)
+        timer = buf.get("timer") if buf else None
+        if timer is not None:
+            timer.cancel()
+            buf["timer"] = None
+
+    def _schedule_debounce_flush(self, chat_id: str) -> None:
+        buf = self._debounce_buffers.get(chat_id)
+        if buf is None:
+            return
+        self._cancel_debounce_timer(chat_id)
         loop = asyncio.get_running_loop()
-        loop.call_later(0, lambda a=accumulated, s=buf.get("source_info", {}):
-            asyncio.ensure_future(self._fire_debounced(a, s)))
-        return text  # Current message proceeds normally
+        delay = max(0.0, self._DEBOUNCE_WINDOW - (time.time() - float(buf["first_at"])))
+        buf["timer"] = loop.call_later(
+            delay,
+            lambda: asyncio.ensure_future(self._flush_debounce(chat_id)),
+        )
+
+    async def _flush_debounce(self, chat_id: str) -> None:
+        buf = self._debounce_buffers.pop(chat_id, None)
+        if buf is None:
+            return
+        pending = list(buf.get("pending") or [])
+        if not pending:
+            return
+        await self._fire_debounced("\n".join(pending), dict(buf.get("source_info") or {}))
 
     async def _fire_debounced(self, text: str, source_info: dict) -> None:
         """Create a MessageEvent from accumulated debounce buffer and feed to pipeline."""
@@ -411,10 +457,13 @@ class FeishuAdapter(BasePlatformAdapter):
             message_type="text",
             source=source,
             raw_message=None,
-            )
+        )
         event.to_envelope()
-        logger.debug("Debounce flush: chat=%s delivering accumulated %d chars",
-                      source_info.get("chat_id", "")[:16], len(text))
+        logger.info(
+            "Debounce flush: chat=%s delivering pending %d chars",
+            source_info.get("chat_id", "")[:16],
+            len(text),
+        )
         self.handle_message(event)
 
     # ── typing indicator ──────────────────────────────

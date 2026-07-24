@@ -72,6 +72,31 @@ def test_feishu_receive_id_type_and_error_format():
     )
 
 
+def _feishu_event(
+    text: str,
+    *,
+    message_id: str = "mid-1",
+    chat_id: str = "oc-chat",
+    sender_type: str = "user",
+    open_id: str = "ou-user",
+):
+    return SimpleNamespace(
+        event=SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type=sender_type,
+                sender_id=SimpleNamespace(open_id=open_id, union_id="", user_id=""),
+            ),
+            message=SimpleNamespace(
+                content=json.dumps({"text": text}),
+                chat_type="p2p",
+                message_id=message_id,
+                chat_id=chat_id,
+                create_time="123456",
+            ),
+        )
+    )
+
+
 @pytest.mark.asyncio
 async def test_feishu_after_parse_without_hooks_keeps_message_event(tmp_path: Path, monkeypatch):
     from personal_agent.models.messages import MessageEvent
@@ -80,22 +105,8 @@ async def test_feishu_after_parse_without_hooks_keeps_message_event(tmp_path: Pa
     adapter = FeishuAdapter(_settings(tmp_path), db=None)
     captured = []
     monkeypatch.setattr(adapter, "handle_message", lambda event: captured.append(event))
-    event_data = SimpleNamespace(
-        event=SimpleNamespace(
-            sender=SimpleNamespace(
-                sender_id=SimpleNamespace(open_id="ou-user", union_id="", user_id="")
-            ),
-            message=SimpleNamespace(
-                content='{"text": "hello"}',
-                chat_type="p2p",
-                message_id="mid-1",
-                chat_id="oc-chat",
-                create_time="123456",
-            ),
-        )
-    )
 
-    await adapter._handle_feishu_event(event_data)
+    await adapter._handle_feishu_event(_feishu_event("hello"))
 
     assert len(captured) == 1
     assert isinstance(captured[0], MessageEvent)
@@ -103,6 +114,74 @@ async def test_feishu_after_parse_without_hooks_keeps_message_event(tmp_path: Pa
     assert captured[0].source.platform == "feishu"
     assert captured[0].envelope is not None
     assert captured[0].envelope.text == "hello"
+
+
+@pytest.mark.asyncio
+async def test_feishu_ignores_bot_sender_messages(tmp_path: Path, monkeypatch):
+    from personal_agent.plugins.builtin.platforms.feishu.adapter import FeishuAdapter
+
+    adapter = FeishuAdapter(_settings(tmp_path), db=None)
+    captured = []
+    monkeypatch.setattr(adapter, "handle_message", lambda event: captured.append(event))
+
+    await adapter._handle_feishu_event(_feishu_event("from bot", sender_type="bot"))
+
+    assert captured == []
+
+
+@pytest.mark.asyncio
+async def test_feishu_debounce_does_not_replay_stale_first_message(tmp_path: Path, monkeypatch):
+    """Absorbed burst texts must not resurrect after a long idle gap.
+
+    Reproduces: user spam '1', then much later ask a new question — old '1's
+    used to be flushed together with the new question.
+    """
+    import asyncio
+
+    from personal_agent.plugins.builtin.platforms.feishu.adapter import FeishuAdapter
+
+    adapter = FeishuAdapter(_settings(tmp_path), db=None)
+    adapter._DEBOUNCE_WINDOW = 0.05
+    captured: list[str] = []
+    monkeypatch.setattr(
+        adapter,
+        "handle_message",
+        lambda event: captured.append(event.text),
+    )
+
+    await adapter._handle_feishu_event(_feishu_event("1", message_id="m1"))
+    await adapter._handle_feishu_event(_feishu_event("1", message_id="m2"))
+    await adapter._handle_feishu_event(_feishu_event("1", message_id="m3"))
+    assert captured == ["1"]  # first delivered; follow-ups pending
+
+    await asyncio.sleep(0.08)  # window ends; pending follow-ups flush once
+    assert captured == ["1", "1\n1"]
+
+    await adapter._handle_feishu_event(
+        _feishu_event("你有联网功能吗？", message_id="m4")
+    )
+    # New question must not re-fire the ancient '1' burst.
+    assert captured[-1] == "你有联网功能吗？"
+    assert captured.count("1") == 1
+    assert all("联网" not in item or item == "你有联网功能吗？" for item in captured)
+
+
+@pytest.mark.asyncio
+async def test_feishu_debounce_idle_single_message_does_not_replay(tmp_path: Path, monkeypatch):
+    import asyncio
+
+    from personal_agent.plugins.builtin.platforms.feishu.adapter import FeishuAdapter
+
+    adapter = FeishuAdapter(_settings(tmp_path), db=None)
+    adapter._DEBOUNCE_WINDOW = 0.05
+    captured: list[str] = []
+    monkeypatch.setattr(adapter, "handle_message", lambda event: captured.append(event.text))
+
+    await adapter._handle_feishu_event(_feishu_event("old", message_id="m1"))
+    await asyncio.sleep(0.08)
+    await adapter._handle_feishu_event(_feishu_event("new", message_id="m2"))
+
+    assert captured == ["old", "new"]
 
 
 @pytest.mark.asyncio

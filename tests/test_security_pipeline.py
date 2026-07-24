@@ -563,3 +563,30 @@ async def test_hook_arguments_are_evaluated_after_modification(tmp_path):
     assert result.status == "denied"
     assert seen == []
     assert decisions[0].requested_resources[0]["resource"] == str(modified)
+
+
+def test_execute_code_denied_in_read_only_mode(tmp_path):
+    from personal_agent.plugins.builtin.tools.builtin import execute_code as _execute_code_mod  # noqa: F401
+    from personal_agent.security.evaluator import evaluate_tool_security, prepare_tool_call
+    from personal_agent.security.session import SecurityStateStore
+    from personal_agent.tools.registry import tool_registry
+
+    entry = tool_registry.get("execute_code")
+    assert entry is not None
+    settings = SimpleNamespace(
+        execution_mode="read-only",
+        sandbox_roots=[tmp_path],
+        permission_grant_ttl_minutes=60,
+        tool_approval_config={},
+    )
+    context = SecurityStateStore(settings).context("session-readonly")
+    decision = evaluate_tool_security(
+        prepare_tool_call({"name": "execute_code", "input": {"code": "print(1)"}}, entry),
+        context,
+    )
+    assert decision.decision == "deny"
+    assert decision.reason_code == "resource_permission_denied"
+    from personal_agent.tools.code_runner import get_code_runner
+
+    caps = get_code_runner().capabilities()
+    assert caps.os_isolated is False

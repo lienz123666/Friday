@@ -56,8 +56,8 @@ class SessionStore:
         logger.info("New session: %s → %s", session_key, entry.session_id)
         return entry
 
-    async def load_history(self, session_id: str) -> list[dict]:
-        return await self._db.load_history(session_id)
+    async def load_history(self, session_id: str, *, api_mode: str = "chat_completions") -> list[dict]:
+        return await self._db.load_history(session_id, api_mode=api_mode)
 
     async def save_transcript(self, session_id: str, messages: list[dict],
                               previous_count: int = 0) -> None:
@@ -65,10 +65,11 @@ class SessionStore:
         new_msgs = messages[previous_count:]
         if not new_msgs:
             return
-        from personal_agent.agent.finalize import unpack_message
+        from personal_agent.conversation.history_events import persist_api_messages
+
         for msg in new_msgs:
-            role, content, tool_calls, tool_name, tool_call_id = unpack_message(msg)
-            await self._db.save_message(session_id, role, content, tool_calls, tool_name, tool_call_id)
+            for event in persist_api_messages([msg]):
+                await self._db.save_conversation_event(session_id, event)
 
         await self._db.update_last_active(session_id, increment_message=True)
 
@@ -143,10 +144,11 @@ class SessionStore:
         await self._db.create_session(entry)
 
         # Persist compressed messages to new session
-        from personal_agent.agent.finalize import unpack_message
+        from personal_agent.conversation.history_events import persist_api_messages
+
         for msg in compressed_messages:
-            role, content, tool_calls, tool_name, tool_call_id = unpack_message(msg)
-            await self._db.save_message(new_id, role, content, tool_calls, tool_name, tool_call_id)
+            for event in persist_api_messages([msg]):
+                await self._db.save_conversation_event(new_id, event)
 
         # Link chain
         if self._chain:

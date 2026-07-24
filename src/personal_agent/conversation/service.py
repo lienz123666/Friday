@@ -143,7 +143,8 @@ class ConversationService:
         previous_session_id = self.session_store.resolve_session_id(session_key)
         session = await self.session_store.get_or_create(session_key, source)
         current_id = self.resolve_session_id(session.session_id)
-        history = await self.session_store.load_history(current_id)
+        api_mode = self._conversation_api_mode()
+        history = await self.session_store.load_history(current_id, api_mode=api_mode)
         previous_count = len(history)
         turn_id = f"{uuid.uuid4().hex[:8]}"
         self.steer_manager.begin_turn(session_key, turn_id)
@@ -615,7 +616,10 @@ class ConversationService:
     async def load_history(self, session_key: str, source) -> list[dict]:
         session = await self.session_store.get_or_create(session_key, source)
         current_id = self.resolve_session_id(session.session_id)
-        return await self.session_store.load_history(current_id)
+        return await self.session_store.load_history(
+            current_id,
+            api_mode=self._conversation_api_mode(),
+        )
 
     async def ensure_session(self, session_key: str, source) -> None:
         await self.session_store.get_or_create(session_key, source)
@@ -829,6 +833,14 @@ class ConversationService:
         if self.compression_chain is None:
             return session_id
         return self.compression_chain.resolve(session_id)
+
+    def _conversation_api_mode(self) -> str:
+        from personal_agent.llm.provider import provider_registry
+
+        return provider_registry.detect_api_mode(
+            str(getattr(self.settings, "llm_base_url", "") or ""),
+            str(getattr(self.settings, "llm_provider", "") or ""),
+        )
 
     def clear_agent(self, session_key: str) -> None:
         self.invalidate_agent(session_key)

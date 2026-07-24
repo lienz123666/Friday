@@ -10,9 +10,9 @@
 
 | 顺序 | 优先级 | 条目 | 排序理由 |
 |---:|:---:|---|---|
-| 1 | P0 | AD-038 | `execute_code` 是没有真实 OS 隔离的任意代码执行入口，且当前文案会造成错误安全预期。 |
-| 2 | P0 | AD-044 | 已修改（待回归验证）：统一 persistence sanitizer；既有库扫描/加密证据仓仍待补。 |
-| 3 | P0 | AD-006 | 外部工具输出跨 Turn 被重放为用户消息，破坏提示注入防线和审计信任边界。 |
+| 1 | P0 | AD-038 | 已改造（phase-1）：execute_code 诚实描述、CodeRunner seam、read-only 拒绝、prompt/非并行。 |
+| 2 | P0 | AD-044 | 已验证：`test_persistence_sanitizer.py` 与 DB/audit 出口统一脱敏。 |
+| 3 | P0 | AD-006 | 已改造：canonical conversation event + trust 重放（`conversation/history_events.py`）。 |
 | 4 | P0 | AD-009 | 已验证：桥接继承执行上下文；配额/审计与 ask-first network 授权回归已通过。 |
 | 5 | P0 | AD-014 | 已验证：`memory_ingest` 已移除；共享 `file_access` 锁定敏感路径旁路。 |
 | 6 | P0 | AD-027 | 已验证：命名会话 key 含 `chat_id`，同名跨群聊不再共享上下文。 |
@@ -263,9 +263,9 @@ agent._iteration_budget -= 1
 
 ## AD-006：跨 Turn 重放时，工具结果丢失“非用户输入”的信任边界
 
-**状态：** 已确认，优先级高。
+**状态：** 已改造（canonical event + provider 重放；`tests/test_conversation_history_events.py` 回归）。
 
-**相关代码：** `src/personal_agent/db/database.py` 的 `load_history()`。
+**相关代码：** `conversation/history_events.py`、`db/database.py` 的 `load_conversation_events()` / `load_history()`、`agent/finalize.py`、`gateway/session_store.py`、`compression/simple.py`。
 
 ### 当前行为
 
