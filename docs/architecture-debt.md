@@ -2,7 +2,7 @@
 
 本文件记录已经确认、但暂不在当前学习阶段修改的运行时问题。每一项在改造前都应补充针对性的回归测试，并复核相关 provider / transport 行为。
 
-> 校正约定：本清单最初来自旧版源码。学习最新版时，已经由代码确认修复的条目会保留历史问题描述，并标记为“已修改（待回归验证）”；只有通过针对性测试后才可标为“已验证”。当前校正基线：`main` 的 `7b1afd0`。
+> 校正约定：本清单最初来自旧版源码。学习最新版时，已经由代码确认修复的条目会保留历史问题描述，并标记为“已修改（待回归验证）”；只有通过针对性测试后才可标为“已验证”。当前校正基线：合并 P0 安全批次后的 `main`（含 AD-038 phase-1 / AD-044 / AD-006）。
 
 ## 优先级总览（2026-07-15）
 
@@ -10,9 +10,9 @@
 
 | 顺序 | 优先级 | 条目 | 排序理由 |
 |---:|:---:|---|---|
-| 1 | P0 | AD-038 | 已改造（phase-1）：execute_code 诚实描述、CodeRunner seam、read-only 拒绝、prompt/非并行。 |
-| 2 | P0 | AD-044 | 已验证：`test_persistence_sanitizer.py` 与 DB/audit 出口统一脱敏。 |
-| 3 | P0 | AD-006 | 已改造：canonical conversation event + trust 重放（`conversation/history_events.py`）。 |
+| 1 | P0 | AD-038 | 阶段 1 已验证：`execute_code` fail-closed；`CodeRunner` seam 保留；真隔离（phase 2–4）仍待做。 |
+| 2 | P0 | AD-044 | 核心已验证：统一 persistence sanitizer 与 DB/audit/export；加密证据仓与旧库扫描仍待做。 |
+| 3 | P0 | AD-006 | 已验证：canonical conversation event + trust 重放（`conversation/history_events.py`）。 |
 | 4 | P0 | AD-009 | 已验证：桥接继承执行上下文；配额/审计与 ask-first network 授权回归已通过。 |
 | 5 | P0 | AD-014 | 已验证：`memory_ingest` 已移除；共享 `file_access` 锁定敏感路径旁路。 |
 | 6 | P0 | AD-027 | 已验证：命名会话 key 含 `chat_id`，同名跨群聊不再共享上下文。 |
@@ -63,7 +63,7 @@
 
 **目标：** 在没有真实隔离能力时，绝不把 `execute_code` 表述或实现为安全沙箱；在具备真实隔离能力时，把它收敛为一个最小权限的代码运行模块。
 
-1. **立即止血（一个小版本）**：删除“sandboxed / 无法访问 agent files”的描述；将 `execute_code` 标为高风险、不可并行、必须显式确认，并在 `read-only`、`ask-first` 等默认安全 profile 中禁用。隔离 Adapter 不可用时 fail-closed，不退化为当前用户权限下的 Python 子进程。
+1. **立即止血（一个小版本）**：删除“sandboxed / 无法访问 agent files”的描述；将 `execute_code` 标为高风险、不可并行、必须显式确认，并在 `read-only`、`ask-first` 等默认安全 profile 中禁用。隔离 Adapter 不可用时 fail-closed，不退化为当前用户权限下的 Python 子进程。（**当前实现：全模式 precheck 禁用。**）
 2. **建立执行 seam（一个中版本）**：抽出 `CodeRunner` interface，由 Windows 与 Linux Adapter 分别实现。Adapter 必须返回实际能力快照：可读挂载、可写输出、网络、CPU/内存/进程数、超时和取消能力；`ToolEntry` 只依赖这一快照，不能声称超过 Adapter 实际提供的保证。
 3. **真实隔离与资源契约（一个大版本）**：使用受限账户/容器/平台 sandbox（Windows 可结合 Job Object，Linux 可用最小 bwrap 根文件系统）；默认无网络，只暴露只读输入和受控输出目录。路径与网络访问用 `ResourceRequirement` 显式建模，超时、`/stop`、异常统一终止整棵进程树。
 4. **验收测试**：默认 profile 下绝对路径读取、网络连接、派生进程全部失败；隔离 Adapter 缺失时工具不可执行；允许目录的读写、输出收集、超时、`/stop` 和 Windows 子进程回收均可重复验证。该计划会顺带关闭 AD-036、AD-037 的执行层部分风险。
@@ -263,11 +263,13 @@ agent._iteration_budget -= 1
 
 ## AD-006：跨 Turn 重放时，工具结果丢失“非用户输入”的信任边界
 
-**状态：** 已改造（canonical event + provider 重放；`tests/test_conversation_history_events.py` 回归）。
+**状态：** 已验证（canonical event + trust 重放；`tests/test_conversation_history_events.py` 与 DB 持久化回归）。
 
 **相关代码：** `conversation/history_events.py`、`db/database.py` 的 `load_conversation_events()` / `load_history()`、`agent/finalize.py`、`gateway/session_store.py`、`compression/simple.py`。
 
-### 当前行为
+### 当前行为与影响
+
+（以下为改造前问题描述，保留作追溯。）
 
 为兼容 Anthropic 的工具调用消息顺序，持久化历史重载时会把 `tool_result` 转换成普通 `role="user"` 文本消息。这能避免 API 协议错误，但原始工具来源、工具名、调用 id 与“不可信外部数据”身份不再保留。
 
@@ -840,20 +842,18 @@ LLM 请求彼此无状态，工具结果本身也不会携带 Skill 指令。因
 
 ## AD-038：`execute_code` 被标为“sandboxed”，但未受到文件、网络或进程能力沙箱约束
 
-**状态：** 已修改（已验证：当前未提供真实 OS 隔离时 fail-closed）。
-**相关代码：** `src/personal_agent/plugins/builtin/tools/builtin/execute_code.py`；`src/personal_agent/tools/entry.py::ToolEntry`；`src/personal_agent/security/evaluator.py::prepare_tool_call()`、`_builtin_resources()`；`src/personal_agent/tools/execution_guard.py::fallback_tool_category()`。
+**状态：** 阶段 1 已验证（无 OS 隔离时 fail-closed）；phase 2–4（真隔离 Adapter、`/stop` 收树）仍待做。
+**相关代码：** `execute_code.py`；`tools/code_runner.py`（seam）；`execution_guard.run_precheck()`。
 
-### 当前行为与影响
+### 已落地（phase-1）
 
-### 最新修改（`codex/ad-038-secure-code-runner`）
+- 移除“sandboxed / 无法访问 agent files”承诺；`execute_code` 仍注册，但 **precheck 与 handler 一律返回禁用说明**（含 `full-auto`）。
+- `ToolEntry`：`permission_category=bash`、`risk_level=high`、`approval_mode=prompt`、不可并行、`is_destructive=True`。
+- 回归：`tests/test_new_tools.py::test_execute_code_disabled`；`tests/test_security_pipeline.py`（precheck + Executor 路径）。
 
-项目尚未实现可验证的 Windows/Linux 代码运行隔离 Adapter，因此不能安全地把“临时工作目录 + 过滤环境”当作沙箱。本次改造删除了原先直接创建 Python 子进程的实现：`execute_code` 仍会注册，以便 Agent 和审计系统得到明确结果，但 handler 与 hard precheck 都会返回“未提供 OS-level code sandbox，工具已禁用”。这使任何工具授权或 `full-auto` 模式都无法重新启用当前用户权限下的任意 Python 执行。
+### 改造前问题（追溯）
 
-ToolEntry 现明确声明 `permission_category="bash"`、`risk_level="high"`、`approval_mode="prompt"`、不可并行且为 destructive；描述不再承诺“sandboxed”或“不能访问 agent files”。未来重新启用必须先实现真实隔离 Adapter、能力探测和本条完成标准中的测试，不能只删除 precheck。
-
-`execute_code` 仅创建临时 `cwd`、过滤环境变量并用 `sys.executable -c` 启动 Python。临时工作目录并不会阻止 `open(r"C:\\...")`、`pathlib.Path(...).read_text()`、`socket`、`subprocess` 或其他绝对路径/网络/进程能力；该进程仍拥有运行 Friday 用户的 OS 权限。其注册又未设置 `permission_category`、`risk_level`、`precheck` 或 `resource_resolver`，所以 `ToolEntry` 默认得到 `permission_category="default"`，`prepare_tool_call()` 也得不到任何资源需求；内核的 SecurityContext 无从对代码实际访问的文件或网络目标做授权判断。
-
-因此工具描述中“isolated temp directory / no access to agent files”的安全承诺不成立，并且它可绕过 `read`、`write`、`bash`、网络工具各自的路径白名单、资源授权和命令预检。这不是把 `bash` 包装得更安全，而是一个未被 OS 沙箱隔离的任意代码执行入口。
+`execute_code` 曾仅用临时 `cwd` 与过滤 env 启动 `python -c`，进程仍具宿主用户权限，可 `open` 绝对路径、`socket`、`subprocess`，且未接入与 `read`/`bash` 一致的资源授权，却对外描述为沙箱。
 
 ### 改造方向与完成标准
 
@@ -938,7 +938,7 @@ Executor 会在工具决策和完成时调用审计函数，字段会脱敏并�
 
 ## AD-044：SQLite 的工具完整输出与元数据未脱敏，`audit.log` 脱敏不构成持久化隐私保护
 
-**状态：** 已修改（待回归验证）。
+**状态：** 核心已验证（持久化出口统一脱敏）；加密证据仓与旧库扫描仍待做。
 **相关代码：** `src/personal_agent/text_safety.py`；`src/personal_agent/tools/redact.py`；`src/personal_agent/db/database.py`；`src/personal_agent/tools/audit.py`；`src/personal_agent/conversation/service.py`；`src/personal_agent/conversation/query.py`。
 
 ### 旧版行为与影响

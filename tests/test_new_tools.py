@@ -498,86 +498,16 @@ async def test_task_list_search_filters_title_and_description(tmp_path: Path, mo
 
 
 @pytest.mark.asyncio
-async def test_execute_code_basic():
-    from personal_agent.plugins.builtin.tools.builtin.execute_code import _execute_code
+async def test_execute_code_disabled():
+    from personal_agent.plugins.builtin.tools.builtin.execute_code import (
+        _execute_code,
+        _precheck,
+    )
 
+    assert "disabled" in _precheck({"code": "print(1)"}).lower()
     result = await _execute_code("print('hello world')")
-    assert "hello world" in result
-
-
-@pytest.mark.asyncio
-async def test_execute_code_math():
-    from personal_agent.plugins.builtin.tools.builtin.execute_code import _execute_code
-
-    result = await _execute_code("print(2 ** 10)")
-    assert "1024" in result
-
-
-@pytest.mark.asyncio
-async def test_execute_code_stderr():
-    from personal_agent.plugins.builtin.tools.builtin.execute_code import _execute_code
-
-    result = await _execute_code("import sys; print('ok', file=sys.stderr)")
-    assert "[stderr]" in result
-    assert "ok" in result
-
-
-@pytest.mark.asyncio
-async def test_execute_code_exception():
-    from personal_agent.plugins.builtin.tools.builtin.execute_code import _execute_code
-
-    result = await _execute_code("raise RuntimeError('boom')")
-    assert "RuntimeError" in result
-    assert "boom" in result
-
-
-@pytest.mark.asyncio
-async def test_execute_code_imports():
-    from personal_agent.plugins.builtin.tools.builtin.execute_code import _execute_code
-
-    result = await _execute_code(
-        "import json, math, datetime, collections; "
-        "print(json.dumps({'sqrt': math.sqrt(16), 'now': str(datetime.date.today())}))"
-    )
-    assert "4.0" in result
-
-
-@pytest.mark.asyncio
-async def test_execute_code_timeout():
-    from personal_agent.plugins.builtin.tools.builtin.execute_code import _execute_code
-
-    result = await _execute_code("import time; time.sleep(120)", timeout=5)
-    assert "timed out" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_execute_code_sandbox_env():
-    """API keys should NOT be available in the sandbox."""
-    from personal_agent.plugins.builtin.tools.builtin.execute_code import _execute_code
-
-    result = await _execute_code(
-        "import os; print('LLM_API_KEY' in os.environ)"
-    )
-    assert "False" in result
-
-
-@pytest.mark.asyncio
-async def test_execute_code_isolated_cwd():
-    """Sandbox should run in a temp directory, not the agent's directory."""
-    from personal_agent.plugins.builtin.tools.builtin.execute_code import _execute_code
-
-    result = await _execute_code("import os; print(os.getcwd())")
-    # Should be a temp dir, not the project dir
-    assert "Personal Agent" not in result
-    assert "Temp" in result or "tmp" in result.lower()
-
-
-@pytest.mark.asyncio
-async def test_execute_code_no_output():
-    from personal_agent.plugins.builtin.tools.builtin.execute_code import _execute_code
-
-    result = await _execute_code("x = 1 + 1")
-    assert "no output" in result.lower()
+    assert "disabled" in result.lower()
+    assert "OS-level" in result
 
 
 # ── delegate_task ───────────────────────────────────────

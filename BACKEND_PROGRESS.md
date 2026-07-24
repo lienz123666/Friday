@@ -1,6 +1,15 @@
 # Backend Progress
 
-更新时间：2026-07-15 CST
+更新时间：2026-07-25 CST
+
+## 2026-07-25：P0 安全批次合并（AD-038 / AD-044 / AD-006）
+
+- **AD-038（phase-1）**：`execute_code` 在无 OS 级隔离时 **fail-closed**（precheck + handler）；保留 `tools/code_runner.py` seam 供后续 Adapter。任意 Python 需经授权的 `bash` + 白名单路径，不再经伪沙箱工具。
+- **AD-044**：持久化统一走 `text_safety.sanitize_persistence_*`（已在 `main` 线）；本轮合并确认 DB/audit/export 回归仍绿。
+- **AD-006**：`conversation/history_events.py` canonical event（`event_type` / `trust_level` / `origin`）；`finalize` / `session_store` / `load_history(api_mode=...)` 重放；压缩摘要经 `build_system_summary_api_message`。
+- **Gateway**：同批合并飞书 debounce / stale replay 修复（`feishu/adapter.py` + `test_platform_adapters.py`）。
+- 回归（合并前聚焦）：`test_conversation_history_events`（6）、`test_persistence_sanitizer`（7）、`test_execute_code_*`（3）、相关 `test_database` 持久化用例。
+- 未做：AD-038 phase 2–4 真隔离；AD-044 加密证据仓与旧 `state.db` 扫描；AD-007 压缩摘要 provenance 独立验收；AD-045 CI 门禁。
 
 ## 2026-07-15：记忆库 observations/memories 落库脱敏
 

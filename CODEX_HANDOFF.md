@@ -1,6 +1,13 @@
 # Codex 交接记录
 
-更新时间：2026-07-13 13:31 CST
+更新时间：2026-07-25 CST
+
+## 2026-07-25 P0 批次合并 main
+
+- **AD-038 phase-1**：`execute_code` fail-closed；`code_runner.py` 为 seam，生产不调用 `run()`。
+- **AD-044 / AD-006**：持久化 sanitizer 与 canonical history event 随 `fix/feishu-debounce-stale-replay` 合并；见 `docs/architecture-debt.md`、`BACKEND_PROGRESS.md`。
+- 飞书 debounce / stale replay 同批合并。
+- 勿整分支 merge `feature/ad-044-persistence-sanitizer`（历史分叉）。
 
 ## 2026-07-13 Settings 收口完成
 

@@ -1,10 +1,26 @@
 # Migration Changelog
 
-更新时间：2026-07-07 01:55 CST
+更新时间：2026-07-25 CST
 
 本文记录项目从最初 Windows/本地原型迁移到当前 Linux/WSL 主工作区后的主要演进。它不是逐 commit changelog，而是按阶段梳理“大版本 / 小版本”的结构性变化，并标注对应时间与代表 git 提交。
 
-当前主分支状态：
+## v0.x P0 安全与持久化（AD-038 / AD-044 / AD-006）
+
+时间：2026-07-24 – 2026-07-25  
+分支：合并 `fix/feishu-debounce-stale-replay` → `main`
+
+主要变化：
+
+- **AD-006**：会话历史改为 canonical conversation event；工具结果重放带 trust 边界与 provider 适配（`history_events.py`、SQLite 事件列）。
+- **AD-044**：SQLite / audit / export / tool-runs 展示统一 persistence sanitizer（`text_safety`）；`full_output` 默认脱敏摘要。
+- **AD-038（phase-1）**：`execute_code` 禁用至具备可验证 OS 隔离；`CodeRunner` 接口预留。
+- 飞书 Gateway：debounce 与 stale replay 修复。
+
+验证：`test_conversation_history_events`、`test_persistence_sanitizer`、`test_security_pipeline`（execute_code）、`test_platform_adapters`（feishu）聚焦回归。
+
+---
+
+当前主分支状态（合并前快照，合并后请以 `git log -1 main` 为准）：
 
 - 分支：`main`
 - 生成基准提交：`3c969a8 [codex] document execution mode config`

@@ -1,48 +1,47 @@
-"""High-risk Python execution via an honest subprocess backend (AD-038)."""
+"""Python code execution gate (AD-038).
+
+No OS-level code sandbox is shipped yet. The tool stays registered so callers
+get an explicit, audited denial instead of an unknown-tool error.
+"""
 
 from __future__ import annotations
 
-from personal_agent.security.models import ResourceRequirement
-from personal_agent.tools.code_runner import DEFAULT_TIMEOUT, MAX_TIMEOUT, get_code_runner
+from personal_agent.tools.code_runner import DEFAULT_TIMEOUT, MAX_TIMEOUT
 from personal_agent.tools.entry import ToolEntry
 from personal_agent.tools.registry import tool_registry
-from personal_agent.tools.sandbox import get_sandbox
 
-_AVAILABLE_MODULES_HINT = (
-    "Stdlib only in the subprocess interpreter; no agent venv packages."
+_UNAVAILABLE_MESSAGE = (
+    "Error: execute_code is disabled because this installation has no "
+    "OS-level code sandbox. Use bash with project Python only when explicitly "
+    "authorized; do not treat this tool as a substitute for file, network, "
+    "or shell permissions."
 )
 
 
-def _execute_code_resources(_inp: dict) -> list[ResourceRequirement]:
-    """Require network + workspace write so read-only modes fail closed."""
-    sandbox = get_sandbox()
-    root = str(sandbox.roots[0]) if sandbox.roots else "."
-    return [
-        ResourceRequirement("filesystem", root, "write", "execute_code"),
-        ResourceRequirement("network", "python-subprocess", "connect", "execute_code"),
-    ]
-
-
 async def _execute_code(code: str, timeout: int = DEFAULT_TIMEOUT) -> str:
-    runner = get_code_runner()
-    return await runner.run(code, timeout=timeout)
+    del code, timeout
+    return _UNAVAILABLE_MESSAGE
+
+
+def _precheck(_: dict) -> str:
+    """Hard block before permission prompts or handler dispatch."""
+    return _UNAVAILABLE_MESSAGE
 
 
 tool_registry.register(
     ToolEntry(
         name="execute_code",
         description=(
-            "Run Python in a separate subprocess with a temp working directory and "
-            "reduced environment variables. This is high risk: it is NOT OS-level "
-            "isolation and code retains the host user's privileges. Requires explicit "
-            "approval in default security modes and is blocked in read-only mode."
+            "Python code execution is unavailable because this installation "
+            "does not provide an OS-level sandbox. Do not use this tool as a "
+            "substitute for file, network, shell, or process permissions."
         ),
         schema={
             "type": "object",
             "properties": {
                 "code": {
                     "type": "string",
-                    "description": "Python source to execute (stdlib only).",
+                    "description": "Python code (tool currently disabled).",
                 },
                 "timeout": {
                     "type": "integer",
@@ -53,12 +52,13 @@ tool_registry.register(
         },
         handler=_execute_code,
         toolset="builtin",
-        permission_category="destructive",
+        permission_category="bash",
+        tags=["code", "python", "requires-isolation"],
         risk_level="high",
+        usage_hint="Unavailable until an OS-level code sandbox is installed and verified.",
+        precheck=_precheck,
         approval_mode="prompt",
-        resource_resolver=_execute_code_resources,
         is_parallel_safe=False,
         is_destructive=True,
-        usage_hint=_AVAILABLE_MODULES_HINT,
     )
 )
