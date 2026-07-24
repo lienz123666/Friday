@@ -20,12 +20,11 @@
 
 ---
 
-当前主分支状态（合并前快照，合并后请以 `git log -1 main` 为准）：
+当前主分支状态：
 
 - 分支：`main`
-- 生成基准提交：`3c969a8 [codex] document execution mode config`
-- 生成基准提交数：`329`
-- 最近全量验证：`uv run pytest -q`，结果 `746 passed`
+-  tip：`280a54b`（P0 安全批次：AD-038 fail-closed、AD-006 canonical events、AD-044 确认、飞书 debounce）
+- 最近全量验证：`pytest tests/` → `924 passed, 10 failed`（失败项为 Qdrant/MCP/bwrap/wechat 等环境依赖，与本次 P0 改动无直接关联）
 
 ## v0.1 Runtime 原型落地
 
