@@ -49,6 +49,51 @@ def test_context_budget_splits_tools_skills_memory_and_mcp():
     ])
     assert budget.remaining_context == 1000 - budget.used
     assert budget.compression_threshold == 600
+    assert budget.reserved_output == 0
+    assert budget.over_budget is False
+    assert budget.deficit == 0
+    assert budget.overflow_source == ""
+    assert budget.usable_limit == 1000
+
+
+def test_context_budget_reserved_output_marks_hard_overflow():
+    budget = estimate_context_budget(
+        messages=[{
+            "role": "user",
+            "content": [{"type": "text", "text": "hello world"}],
+        }],
+        system_prompt="system prompt",
+        context_limit=50,
+        reserved_output=80,
+    )
+    assert budget.remaining_context == max(0, 50 - budget.used)
+    assert budget.reserved_output == 80
+    assert budget.over_budget is True
+    assert budget.deficit == budget.used + 80 - 50
+    assert budget.can_send is True
+    assert budget.overflow_source in {
+        "system_prompt",
+        "history_messages",
+        "mixed",
+    }
+
+
+def test_context_budget_used_over_limit_keeps_remaining_zero():
+    budget = estimate_context_budget(
+        messages=[{
+            "role": "user",
+            "content": [{"type": "text", "text": "x" * 4000}],
+        }],
+        context_limit=50,
+        reserved_output=10,
+    )
+    assert budget.used > 50
+    assert budget.remaining_context == 0
+    assert budget.over_budget is True
+    assert budget.can_send is False
+    assert budget.deficit == budget.used + 10 - 50
+    assert budget.overflow_source == "history_messages"
+
 
 
 def test_compose_context_text_skips_empty_parts():

@@ -105,6 +105,7 @@ class AgentTurnReport:
     retries: list[TurnRetryReport] = field(default_factory=list)
     steer: dict[str, Any] = field(default_factory=dict)
     event_counts: dict[str, int] = field(default_factory=dict)
+    context_recovery: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self._started = monotonic()
@@ -175,6 +176,9 @@ class AgentTurnReport:
                 message=event.message,
                 recoverable=bool(data.get("recoverable", False)),
             ))
+            self._merge_context_recovery(data)
+        elif event.type == "compression":
+            self._merge_context_recovery(data)
         elif event.type == "assistant_message":
             self._record_assistant_claim(event.message)
             self.final_response_summary = _summarize(event.message)
@@ -184,9 +188,13 @@ class AgentTurnReport:
             self.status = "stopped"
             self.completed = False
         elif event.type == "error":
-            self.status = "failed"
+            if str(data.get("category") or "") == "context_overflow":
+                self.status = "context_overflow"
+            else:
+                self.status = "failed"
             self.completed = False
             self.error = str(data.get("error") or event.message or "")
+            self._merge_context_recovery(data)
         elif event.type == "turn_end":
             self._apply_turn_end(data)
 
@@ -194,6 +202,8 @@ class AgentTurnReport:
         status = str(result.get("status") or "")
         completed = bool(result.get("completed", self.completed))
         if result.get("context_overflow"):
+            self.status = "context_overflow"
+        elif status == "context_overflow":
             self.status = "context_overflow"
         elif status == "stopped":
             self.status = "stopped"
@@ -211,6 +221,9 @@ class AgentTurnReport:
             self.final_response_summary = _summarize(final_response)
         self.should_review_memory = bool(result.get("should_review_memory", self.should_review_memory))
         self.duration = max(monotonic() - self._started, 0.0)
+        recovery = result.get("context_recovery")
+        if isinstance(recovery, dict) and recovery:
+            self._merge_context_recovery(recovery)
         return result
 
     def as_dict(self) -> dict[str, Any]:
@@ -244,6 +257,7 @@ class AgentTurnReport:
             "retries": [retry.as_dict() for retry in self.retries],
             "steer": dict(self.steer),
             "event_counts": dict(sorted(self.event_counts.items())),
+            "context_recovery": dict(self.context_recovery),
         }
 
     def _apply_tool_decision(self, data: dict[str, Any]) -> None:
@@ -292,6 +306,28 @@ class AgentTurnReport:
             self.should_review_memory = bool(data.get("should_review_memory"))
         if data.get("context_overflow"):
             self.status = "context_overflow"
+
+    def _merge_context_recovery(self, data: dict[str, Any]) -> None:
+        recovery = dict(self.context_recovery or {})
+        source = str(data.get("overflow_source") or "").strip()
+        if source:
+            recovery["overflow_source"] = source
+        if "reserved_output" in data:
+            recovery["reserved_output"] = _as_int(data.get("reserved_output"))
+        if "deficit" in data:
+            recovery["deficit"] = _as_int(data.get("deficit"))
+        if "immovable_overflow" in data:
+            recovery["immovable_overflow"] = bool(data.get("immovable_overflow"))
+        incoming = data.get("trim_actions")
+        if isinstance(incoming, list) and incoming:
+            existing = list(recovery.get("trim_actions") or [])
+            existing.extend(item for item in incoming if item not in existing)
+            recovery["trim_actions"] = existing
+        budget = data.get("budget") or data.get("context_budget")
+        if isinstance(budget, dict) and budget:
+            recovery["budget"] = dict(budget)
+        if recovery:
+            self.context_recovery = recovery
 
     def _apply_steer_consumed(self, data: dict[str, Any]) -> None:
         steer = dict(self.steer or {})

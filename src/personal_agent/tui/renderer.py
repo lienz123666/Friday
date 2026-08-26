@@ -255,6 +255,8 @@ class InlineRenderer(Renderer):
         detail = str(data.get("error") or "")
         suffix = f": {detail}" if detail and detail not in text else ""
         parts = [str(data.get("category") or "")] if data.get("category") else []
+        if data.get("overflow_source"):
+            parts.append(str(data.get("overflow_source")))
         if data.get("recoverable") is True:
             parts.append("可恢复")
         elif data.get("recoverable") is False:

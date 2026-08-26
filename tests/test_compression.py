@@ -14,6 +14,7 @@ from personal_agent.compression.simple import (
     _format_messages_for_summary,
 )
 from personal_agent.agent.context import _check_and_compress
+from personal_agent.llm.token_counter import count_messages_tokens
 from personal_agent.models.messages import NormalizedResponse
 
 
@@ -480,6 +481,48 @@ async def test_compress_summary_is_safe_for_anthropic_messages():
 
 
 @pytest.mark.asyncio
+async def test_compress_repairs_tool_pair_split_by_summary():
+    """Summary between tool_use and tool_result must not produce Anthropic 400 pairing errors."""
+    from personal_agent.conversation.history_events import repair_native_tool_messages
+
+    mock_transport = AsyncMock()
+    mock_transport.call.return_value = NormalizedResponse(
+        text="压缩摘要", tool_calls=[], usage={},
+        finish_reason="end_turn", stop_reason="end_turn", model="test",
+    )
+    c = ContextCompressor(threshold_ratio=0.01, protect_head=2, protect_tail=2)
+    msgs = [
+        _text_msg("user", "q0"),
+        _text_msg("assistant", "a0"),
+        _text_msg("user", "q1 " + "x" * 200),
+        _text_msg("assistant", "a1 " + "x" * 200),
+        _text_msg("user", "q2 " + "x" * 200),
+        _tool_use_msg("call_01_edge", "bash"),
+        _tool_result_msg("call_01_edge", "ok"),
+        _text_msg("user", "followup"),
+    ]
+    # Force head/tail cut between tool_use (index 5) and tool_result (index 6) via protect_tail=2
+    # head=2, tail=2 → middle indexes 2..5 including tool_use; tail starts at tool_result.
+    compressed = await c.compress(msgs, "", mock_transport, protect_head=2, protect_tail=2)
+    repaired = repair_native_tool_messages(compressed)
+    # Either the pair survives adjacent, or orphan result/use is dropped — never unpaired tool_result.
+    for i, message in enumerate(repaired):
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                prev = repaired[i - 1] if i else None
+                assert prev is not None and prev.get("role") == "assistant"
+                prev_ids = {
+                    b.get("id")
+                    for b in prev.get("content", [])
+                    if isinstance(b, dict) and b.get("type") == "tool_use"
+                }
+                assert block.get("tool_use_id") in prev_ids
+
+
+@pytest.mark.asyncio
 async def test_compress_failure_sets_cooldown():
     """LLM failure → cooldown + ineffective count."""
     mock_transport = AsyncMock()
@@ -578,3 +621,25 @@ def test_format_messages_truncates_long_text():
     ]
     result = _format_messages_for_summary(msgs)
     assert len(result) < 500  # truncated at 300 chars per message
+
+
+def test_tail_token_budget_truncates_oversized_single_message():
+    compressor = ContextCompressor(
+        context_length=1000,
+        threshold_ratio=0.9,
+        tail_token_budget=40,
+        protect_head=1,
+        protect_tail=2,
+        model="m",
+    )
+    messages = [
+        _text_msg("user", "hello"),
+        _text_msg("assistant", "ok"),
+        _tool_use_msg("t1", "read"),
+        _tool_result_msg("t1", "y" * 8000),
+    ]
+    fitted = compressor.apply_tail_token_budget(messages)
+    tail_tokens = count_messages_tokens(fitted[-2:], model="m")
+    assert tail_tokens <= 40
+    assert count_messages_tokens([fitted[-1]], model="m") <= 40
+

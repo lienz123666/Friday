@@ -178,6 +178,11 @@
   - `percent`
   - `compression_threshold`
   - `over_compression_threshold`
+  - `reserved_output` — 为模型输出预留的 token（通常等于 `provider.max_tokens`）
+  - `over_budget` — `used + reserved_output > context_limit`
+  - `deficit` — 超出可用上限的 token 数；`remaining_context` 仍不小于 0
+  - `overflow_source` — 主要超限分项：`system_prompt` / `history_messages` / `tools_schema` / `skills` / `memory_injections` / `mcp_tools` / `mixed`
+  - `immovable` / `usable_limit` / `immovable_overflow` / `can_send` — system+tools 是否单独占满窗口；`can_send` 表示输入仍能装进窗口
 
 `cache_diagnostics` 用于排查 provider prompt cache 命中率，当前常见字段：
 
@@ -322,6 +327,21 @@
 
 当同一轮内相同参数的工具调用已经成功执行 3 次，后端不再执行第 4 次请求，改为一次禁用工具的模型收尾调用。此时发送 `category="duplicate_tool_call"`、`attempt=1`、`max_attempts=1` 和对应 `tool_name`。该事件只表示运行时恢复；最终 `assistant_message` 是模型基于已有工具结果生成的正常回复，不包含重复调用诊断或原始结果转储。
 
+当 Provider 返回 context-length / token-limit 错误时，发送 `category="context_overflow"`，并附带 `overflow_source`、`trim_actions`、`reserved_output`、`deficit`。该重试每轮最多一次；第二次仍失败则改为 `error` 且 `status=context_overflow`。
+
+### `compression`
+
+历史压缩或硬性预算裁剪。Turn 开始时的摘要压缩仍使用该事件；每次 LLM 前的预算裁剪也会发送，并带上 `trim_actions`。
+
+常见字段：
+
+- `pre_message_count: integer`
+- `post_message_count: integer`
+- `overflow_source: string`
+- `trim_actions: list[object]`，每项含 `action` / `detail` / `tokens_before` / `tokens_after`
+- `reserved_output: integer`
+- `deficit: integer`
+
 ### `stop`
 
 当前 turn 被停止或中断。
@@ -333,6 +353,17 @@
 必需字段：
 
 - `error: string`
+
+常见字段：
+
+- `category: string`，如 `llm` / `runtime` / `tool` / `context_overflow`
+- `recoverable: boolean`
+- `detail_id: string`
+- `overflow_source: string` — `category=context_overflow` 时的主要超限分项
+- `trim_actions: list[object]`
+- `reserved_output: integer`
+- `deficit: integer`
+- `context_budget: object`
 
 ### `turn_end`
 
@@ -728,6 +759,15 @@ Gateway 异步确认：
 - `context_remaining_tokens`
 - `context_percent`
 - `context_budget`
+
+完整 `report.context_recovery` 记录本轮硬性预算门的裁剪与超限诊断：
+
+- `overflow_source: string`
+- `trim_actions: list[object]`
+- `reserved_output: integer`
+- `deficit: integer`
+- `immovable_overflow: boolean`
+- `budget: object`
 
 完整 `report.steer` 记录本轮运行中修正摘要：
 

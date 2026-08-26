@@ -18,6 +18,8 @@ class RetryState:
     thinking_prefill_retries: int = 0        # thinking block prefill failed (reserved)
     post_tool_empty_retried: bool = False    # after tools ran, LLM returned empty
 
+    context_overflow_recovered: bool = False  # one aggressive context recovery per turn
+
     MAX_EMPTY_CONTENT = 2
     MAX_INVALID_TOOL = 2
     MAX_INVALID_JSON = 2
@@ -32,3 +34,4 @@ class RetryState:
         self.incomplete_scratchpad_retries = 0
         self.thinking_prefill_retries = 0
         self.post_tool_empty_retried = False
+        self.context_overflow_recovered = False

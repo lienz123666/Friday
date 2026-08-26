@@ -238,6 +238,10 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
             EventFieldSpec("tool_name", "string", "Tool name for tool retry."),
             EventFieldSpec("tool_names", "string", "Comma-separated invalid tool names."),
             EventFieldSpec("recoverable", "boolean", "Whether the runtime expects automatic recovery."),
+            EventFieldSpec("overflow_source", "string", "Largest context budget component when retrying a context overflow."),
+            EventFieldSpec("trim_actions", "list[object]", "Budget trim actions already taken."),
+            EventFieldSpec("reserved_output", "integer", "Output tokens reserved in the hard budget gate."),
+            EventFieldSpec("deficit", "integer", "Tokens over the usable context limit."),
         ),
     ),
     "compression": EventSchema(
@@ -246,6 +250,10 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
         fields=(
             EventFieldSpec("pre_message_count", "integer", "Message count before compression."),
             EventFieldSpec("post_message_count", "integer", "Message count after compression."),
+            EventFieldSpec("overflow_source", "string", "Largest context budget component that triggered trimming."),
+            EventFieldSpec("trim_actions", "list[object]", "Budget trim actions applied for this request."),
+            EventFieldSpec("reserved_output", "integer", "Output tokens reserved in the hard budget gate."),
+            EventFieldSpec("deficit", "integer", "Tokens over the usable context limit."),
         ),
     ),
     "steer_consumed": EventSchema(
@@ -272,9 +280,14 @@ EVENT_SCHEMAS: dict[str, EventSchema] = {
         "A runtime error occurred.",
         fields=(
             EventFieldSpec("error", "string", "Error text.", required=True),
-            EventFieldSpec("category", "string", "Error category such as llm/runtime/tool."),
+            EventFieldSpec("category", "string", "Error category such as llm/runtime/tool/context_overflow."),
             EventFieldSpec("recoverable", "boolean", "Whether the runtime can continue automatically."),
             EventFieldSpec("detail_id", "string", "Stable detail/log id when available."),
+            EventFieldSpec("overflow_source", "string", "Largest context budget component when category is context_overflow."),
+            EventFieldSpec("trim_actions", "list[object]", "Budget trim actions taken before failing closed."),
+            EventFieldSpec("reserved_output", "integer", "Output tokens reserved in the hard budget gate."),
+            EventFieldSpec("deficit", "integer", "Tokens over the usable context limit."),
+            EventFieldSpec("context_budget", "object", "Context budget snapshot at overflow."),
         ),
     ),
     "turn_end": EventSchema(

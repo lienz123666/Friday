@@ -42,7 +42,7 @@ def _install_echo_agent(monkeypatch) -> None:
             api_key="test",
             model="echo-model",
             max_tokens=128,
-            context_window=1000,
+            context_window=32000,
         )
         transport = EchoTransport()
         agent = init_agent(

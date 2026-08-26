@@ -96,6 +96,21 @@ def test_event_protocol_schema_is_frontend_serializable():
     assert error_fields["error"]["required"] is True
     assert error_fields["category"]["type"] == "string"
     assert error_fields["detail_id"]["type"] == "string"
+    assert error_fields["overflow_source"]["type"] == "string"
+    assert error_fields["trim_actions"]["type"] == "list[object]"
+
+    retry_fields = {
+        field["name"]: field
+        for field in schema["events"]["retry"]["fields"]
+    }
+    assert retry_fields["overflow_source"]["type"] == "string"
+    assert retry_fields["trim_actions"]["type"] == "list[object]"
+
+    compression_fields = {
+        field["name"]: field
+        for field in schema["events"]["compression"]["fields"]
+    }
+    assert compression_fields["trim_actions"]["type"] == "list[object]"
 
 
 def test_frontend_protocol_schema_aliases_event_protocol_schema():

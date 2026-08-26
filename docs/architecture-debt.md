@@ -17,7 +17,7 @@
 | 5 | P0 | AD-014 | 已验证：`memory_ingest` 已移除；共享 `file_access` 锁定敏感路径旁路。 |
 | 6 | P0 | AD-027 | 已验证：命名会话 key 含 `chat_id`，同名跨群聊不再共享上下文。 |
 | 7 | P0（回归门） | AD-015 | 已验证：`tests/test_memory_scope_isolation.py` 多 user/profile 隔离 + Gateway session_key 解析。 |
-| 8 | P1 | AD-001 | 上下文溢出会导致核心对话请求失败，且缺少可恢复、可解释的闭环。 |
+| 8 | P1 | AD-001 | 已验证：每次 LLM 前硬性预算门 + 输出预留；超限可恢复裁剪，失败返回 `context_overflow`。 |
 | 9 | P1 | AD-005 | 会话、压缩链与观测数据跨存储非原子，崩溃时可能产生不可恢复的不一致。 |
 | 10 | P1 | AD-008 | 进程级取消状态会让一个 session 的 `/stop` 影响另一个 session。 |
 | 11 | P1 | AD-010 | 文件读写可造成内存压力、策略绕过与半写入损坏。 |
@@ -92,13 +92,21 @@
 
 ## AD-001：上下文超限缺少硬性预算门与恢复闭环
 
-**状态：** 已确认，待改造。
+**状态：** 已验证（硬性预算门 + 一次激进恢复 + `context_overflow` 闭环）。
 
 **相关代码：**
 
-- `src/personal_agent/agent/context.py`：Turn 开始时的上下文压缩。
-- `src/personal_agent/compression/simple.py`：旧工具结果清理与摘要压缩。
-- `src/personal_agent/agent/loop.py`：每次 LLM 请求前构建消息、请求模型、处理异常。
+- `src/personal_agent/context_budget.py`：分项估算，含 `reserved_output` / `over_budget` / `deficit` / `overflow_source`。
+- `src/personal_agent/agent/context_preflight.py`：每次 LLM 前的准入、按优先级裁剪与 fail-closed。
+- `src/personal_agent/agent/loop.py`：调用 preflight；分类 Provider context-length 错误并只激进恢复一次。
+- `src/personal_agent/compression/simple.py`：`tail_token_budget` 按 token 约束尾部与超长单条消息。
+
+### 回归测试
+
+- `tests/test_context_budget.py`：预留下限、`remaining_context` 不小于 0、`over_budget`/`deficit`/`overflow_source`。
+- `tests/test_context_preflight.py`：裁剪顺序、单条 token 截断、immovable fail-closed、工具追加后再检。
+- `tests/test_agent_loop.py`：超硬门不调用 transport；Provider context-length 一次恢复后再失败返回 overflow；普通 transport 错误仍为 `failed`。
+- `tests/test_compression.py`：`tail_token_budget` 对超长尾部/单条生效。
 
 ### 当前行为
 

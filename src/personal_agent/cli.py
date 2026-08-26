@@ -2521,21 +2521,24 @@ def format_plugin_validation_report(report: dict[str, Any], *, include_traceback
 
 
 def format_token_budget(data: dict[str, Any]) -> str:
-    lines = [
-        "上下文预算估算",
-        f"已用: {data['used']:,} / {data['context_limit']:,} tokens ({data['percent']}%)",
-        f"剩余: {data['remaining_context']:,}",
-        f"system prompt: {data['system_prompt']:,}",
-        f"history messages: {data['history_messages']:,}",
-        f"tools schema: {data['tools_schema']:,}",
-        f"skills: {data['skills']:,}",
-        f"memory injections: {data['memory_injections']:,}",
-        f"MCP tools: {data['mcp_tools']:,}",
-    ]
-    if data.get("compression_threshold"):
-        marker = " (已达到)" if data.get("over_compression_threshold") else ""
-        lines.append(f"compression threshold: {data['compression_threshold']:,}{marker}")
-    return "\n".join(lines)
+    from personal_agent.context_budget import ContextBudget, format_context_budget_report
+
+    budget = ContextBudget(
+        system_prompt=int(data.get("system_prompt") or 0),
+        history_messages=int(data.get("history_messages") or 0),
+        tools_schema=int(data.get("tools_schema") or 0),
+        skills=int(data.get("skills") or 0),
+        memory_injections=int(data.get("memory_injections") or 0),
+        mcp_tools=int(data.get("mcp_tools") or 0),
+        remaining_context=int(data.get("remaining_context") or 0),
+        context_limit=int(data.get("context_limit") or 0),
+        compression_threshold=int(data.get("compression_threshold") or 0),
+        reserved_output=int(data.get("reserved_output") or 0),
+        over_budget=bool(data.get("over_budget", False)),
+        deficit=int(data.get("deficit") or 0),
+        overflow_source=str(data.get("overflow_source") or ""),
+    )
+    return "上下文预算估算\n" + format_context_budget_report(budget)
 
 
 def _doctor_issues(report: dict[str, Any]) -> list[str]:

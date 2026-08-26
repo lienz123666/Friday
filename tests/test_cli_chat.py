@@ -92,7 +92,7 @@ async def runtime(tmp_path):
         api_key="k",
         model="deepseek-chat",
         max_tokens=128,
-        context_window=1000,
+        context_window=32000,
     )
     agent = init_agent(
         transport,

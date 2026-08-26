@@ -16,6 +16,12 @@ import hashlib
 import json
 import logging
 
+from personal_agent.agent.context_preflight import (
+    PreflightResult,
+    format_overflow_message,
+    looks_like_context_length_error,
+    preflight_context_budget,
+)
 from personal_agent.agent.report import TurnReportRecorder
 from personal_agent.context_budget import compose_context_text, estimate_context_budget
 from personal_agent.conversation.events import ConversationEvent, emit_delta, emit_event
@@ -77,9 +83,39 @@ async def run_conversation(agent, ctx, *, event_sink=None, confirm=None, steer=N
 
         await _consume_steer(ctx, steer, session_key, report_recorder)
 
-        # ── build api_messages (injections, NOT persisted) ──
         is_duplicate_finalization = duplicate_finalization_pending
         active_tools = [] if is_duplicate_finalization else agent.tools
+        preflight_mode = "aggressive" if agent._retry.context_overflow_recovered else "hard"
+        prior_trim_count = len(getattr(ctx, "trim_actions", []) or [])
+        preflight = await preflight_context_budget(
+            agent,
+            ctx,
+            tools=active_tools,
+            mode=preflight_mode,
+        )
+        new_trim_actions = preflight.trim_actions[prior_trim_count:]
+        if new_trim_actions:
+            await emit_event(
+                report_recorder,
+                "compression",
+                "已按上下文预算裁剪请求",
+                pre_message_count=getattr(ctx, "pre_compress_message_count", len(ctx.messages)),
+                post_message_count=len(ctx.messages),
+                overflow_source=preflight.overflow_source,
+                trim_actions=[action.as_dict() for action in new_trim_actions],
+                reserved_output=preflight.budget.reserved_output,
+                deficit=preflight.budget.deficit,
+            )
+        if not preflight.allowed:
+            return await _return_context_overflow(
+                report_recorder,
+                agent,
+                ctx,
+                preflight,
+                _with_turn_report,
+            )
+
+        # ── build api_messages (injections, NOT persisted) ──
         skill_injection_for_plan = getattr(ctx, "skill_injection", None)
         api_messages = await _build_api_messages(agent, ctx)
         if is_duplicate_finalization:
@@ -109,6 +145,21 @@ async def run_conversation(agent, ctx, *, event_sink=None, confirm=None, steer=N
             tools=active_tools,
         )
         context_usage_payload = _context_usage_payload(context_budget)
+        if not context_budget.can_send:
+            assembled = PreflightResult(
+                allowed=False,
+                budget=context_budget,
+                trim_actions=list(preflight.trim_actions),
+                overflow_source=context_budget.overflow_source,
+                immovable_overflow=context_budget.immovable_overflow,
+            )
+            return await _return_context_overflow(
+                report_recorder,
+                agent,
+                ctx,
+                assembled,
+                _with_turn_report,
+            )
 
         # ── LLM call (interruptible — polls _interrupt_requested every 5s) ──
         try:
@@ -185,6 +236,39 @@ async def run_conversation(agent, ctx, *, event_sink=None, confirm=None, steer=N
                 })
                 await emit_event(report_recorder, "assistant_message", final_message)
                 break
+            if looks_like_context_length_error(exc):
+                if not agent._retry.context_overflow_recovered:
+                    agent._retry.context_overflow_recovered = True
+                    await emit_event(
+                        report_recorder,
+                        "retry",
+                        "模型报告上下文超限，准备激进裁剪后重试",
+                        category="context_overflow",
+                        attempt=1,
+                        max_attempts=1,
+                        error=f"{type(exc).__name__}: {exc}",
+                        recoverable=True,
+                        overflow_source=preflight.overflow_source,
+                        trim_actions=[action.as_dict() for action in preflight.trim_actions],
+                        reserved_output=preflight.budget.reserved_output,
+                        deficit=preflight.budget.deficit,
+                    )
+                    logger.info("Context-length error; attempting one aggressive recovery")
+                    continue
+                overflow = await preflight_context_budget(
+                    agent,
+                    ctx,
+                    tools=active_tools,
+                    mode="aggressive",
+                )
+                return await _return_context_overflow(
+                    report_recorder,
+                    agent,
+                    ctx,
+                    overflow,
+                    _with_turn_report,
+                    exc=exc,
+                )
             if _looks_like_image_unsupported_error(exc) and not getattr(ctx, "_image_retry_text_only", False):
                 stripped = _strip_image_blocks(ctx.messages)
                 if stripped:
@@ -592,7 +676,57 @@ async def _emit_stop(
     ))
 
 
-async def _emit_error(sink, message: str, exc: Exception, *, category: str) -> None:
+async def _return_context_overflow(
+    report_recorder,
+    agent,
+    ctx,
+    preflight,
+    with_turn_report,
+    *,
+    exc: Exception | None = None,
+) -> dict:
+    message = format_overflow_message(preflight)
+    error = f"{type(exc).__name__}: {exc}" if exc is not None else message
+    await emit_event(
+        report_recorder,
+        "error",
+        message,
+        error=error,
+        category="context_overflow",
+        recoverable=False,
+        detail_id=_event_detail_id("context_overflow", error),
+        overflow_source=preflight.overflow_source,
+        trim_actions=[action.as_dict() for action in preflight.trim_actions],
+        reserved_output=preflight.budget.reserved_output,
+        deficit=preflight.budget.deficit,
+        context_budget=preflight.budget.as_dict(),
+    )
+    result = {
+        "final_response": message,
+        "messages": ctx.messages,
+        "api_calls": agent.session_api_calls,
+        "completed": False,
+        "status": "context_overflow",
+        "context_overflow": True,
+        "error": error,
+        "context_recovery": preflight.as_dict(),
+        "should_review_memory": False,
+    }
+    await emit_event(
+        report_recorder,
+        "turn_end",
+        "上下文超出限制",
+        status="context_overflow",
+        completed=False,
+        final_response=message,
+        api_calls=agent.session_api_calls,
+        context_overflow=True,
+        overflow_source=preflight.overflow_source,
+    )
+    return with_turn_report(result)
+
+
+async def _emit_error(sink, message: str, exc: Exception, *, category: str, **extra) -> None:
     error = f"{type(exc).__name__}: {exc}"
     await emit_event(
         sink,
@@ -602,6 +736,7 @@ async def _emit_error(sink, message: str, exc: Exception, *, category: str) -> N
         category=category,
         recoverable=False,
         detail_id=_event_detail_id(category, error),
+        **extra,
     )
 
 
@@ -812,6 +947,7 @@ def _build_request_context_budget(
         memory_injections=memory_injections,
         context_limit=context_limit,
         model=model,
+        reserved_output=max(1, int(getattr(provider, "max_tokens", 1) or 1)) if provider is not None else 0,
     )
     compressor = getattr(agent, "_compressor", None)
     threshold_tokens = int(getattr(compressor, "threshold_tokens", 0) or 0)

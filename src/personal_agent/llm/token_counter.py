@@ -148,6 +148,135 @@ def count_messages_tokens(
     return total
 
 
+TRUNCATION_MARK = "\n...[truncated]"
+
+
+def truncate_text_to_tokens(
+    text: str,
+    max_tokens: int,
+    model: str = "",
+    *,
+    suffix: str = TRUNCATION_MARK,
+) -> str:
+    """Keep a prefix of ``text`` whose token count fits in ``max_tokens``."""
+    if max_tokens <= 0 or not text:
+        return ""
+    if estimate_tokens(text, model) <= max_tokens:
+        return text
+    suffix_tokens = estimate_tokens(suffix, model) if suffix else 0
+    budget = max(1, max_tokens - suffix_tokens)
+    # Bound the search window: char/4 heuristic is ~1 token per 4 chars.
+    hi = min(len(text), max(budget * 8, budget))
+    lo = 0
+    best = ""
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        candidate = text[:mid]
+        if estimate_tokens(candidate, model) <= budget:
+            best = candidate
+            lo = mid + 1
+        else:
+            hi = mid - 1
+    trimmed = best.rstrip()
+    return trimmed + suffix if suffix else trimmed
+
+
+def _block_text(block: dict) -> str:
+    if block.get("type") == "tool_result":
+        return str(block.get("content") or "")
+    return str(block.get("text") or "")
+
+
+def _set_block_text(block: dict, text: str) -> None:
+    if block.get("type") == "tool_result":
+        block["content"] = text
+    else:
+        block["text"] = text
+
+
+def _is_truncatable_block(block: object) -> bool:
+    return isinstance(block, dict) and block.get("type") in {"text", "tool_result"}
+
+
+def truncate_message_to_tokens(message: dict, max_tokens: int, model: str = "") -> dict:
+    """Return a copy of ``message`` whose estimated tokens fit in ``max_tokens``."""
+    import copy
+
+    if max_tokens <= 0:
+        return {"role": message.get("role", "user"), "content": [{"type": "text", "text": ""}]}
+    new_msg = copy.deepcopy(message)
+    if count_messages_tokens([new_msg], model=model) <= max_tokens:
+        return new_msg
+
+    content = new_msg.get("content")
+    if isinstance(content, str):
+        new_msg["content"] = truncate_text_to_tokens(content, max_tokens, model)
+        return new_msg
+    if not isinstance(content, list):
+        new_msg["content"] = [{"type": "text", "text": truncate_text_to_tokens(str(content), max_tokens, model)}]
+        return new_msg
+
+    truncatable = [block for block in content if _is_truncatable_block(block)]
+    if not truncatable:
+        return new_msg
+
+    # Repeatedly shrink the largest truncatable block until the message fits.
+    for _ in range(24):
+        current = count_messages_tokens([new_msg], model=model)
+        if current <= max_tokens:
+            return new_msg
+        largest = max(truncatable, key=lambda block: estimate_tokens(_block_text(block), model))
+        text = _block_text(largest)
+        if not text:
+            break
+        block_tokens = estimate_tokens(text, model)
+        overflow = current - max_tokens
+        target = max(8, block_tokens - overflow)
+        if target >= block_tokens:
+            target = max(8, block_tokens // 2)
+        _set_block_text(largest, truncate_text_to_tokens(text, target, model))
+        if _block_text(largest) == text:
+            break
+    return new_msg
+
+
+def fit_messages_to_token_budget(
+    messages: list[dict],
+    *,
+    model: str = "",
+    max_tokens: int,
+    protect_head: int = 2,
+    protect_last: int = 1,
+) -> list[dict]:
+    """Drop/truncate messages so the list fits ``max_tokens``.
+
+    Never drops the last ``protect_last`` messages; truncates them instead.
+    """
+    import copy
+
+    if max_tokens <= 0:
+        return []
+    result = [copy.deepcopy(message) for message in messages]
+    result = [truncate_message_to_tokens(message, max_tokens, model) for message in result]
+    if count_messages_tokens(result, model=model) <= max_tokens:
+        return result
+
+    head = max(0, int(protect_head or 0))
+    tail = max(1, int(protect_last or 1))
+    while len(result) > head + tail:
+        if count_messages_tokens(result, model=model) <= max_tokens:
+            return result
+        drop_at = min(head, len(result) - tail - 1)
+        if drop_at < 0:
+            break
+        result.pop(drop_at)
+
+    if count_messages_tokens(result, model=model) <= max_tokens:
+        return result
+    per_cap = max(32, max_tokens // max(len(result), 1))
+    return [truncate_message_to_tokens(message, per_cap, model) for message in result]
+
+
 def count_tools_tokens(tools: list[dict], model: str = "") -> int:
     """Token estimate for tool definitions."""
     total = 0

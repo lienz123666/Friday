@@ -74,6 +74,7 @@ class Agent:
     _last_skill_summaries: str = ""
     _last_memory_injections: str = ""
     _last_tool_results: list[dict] = field(default_factory=list)
+    _last_context_recovery: dict = field(default_factory=dict)
 
     # ── pool split (same pool for MVP, separate later) ──
     _llm_pool: Any = None

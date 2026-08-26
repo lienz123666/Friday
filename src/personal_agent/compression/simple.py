@@ -14,9 +14,16 @@ from typing import Any
 
 from personal_agent.compression.base import ContextEngine
 from personal_agent.compression.registry import compression_registry
-from personal_agent.conversation.history_events import build_system_summary_api_message
+from personal_agent.conversation.history_events import (
+    build_system_summary_api_message,
+    repair_native_tool_messages,
+)
 from personal_agent.llm.provider import ProviderProfile
-from personal_agent.llm.token_counter import count_messages_tokens, count_tools_tokens
+from personal_agent.llm.token_counter import (
+    count_messages_tokens,
+    fit_messages_to_token_budget,
+    truncate_message_to_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -81,6 +88,7 @@ class ContextCompressor(ContextEngine):
 
         # Step 1: prune old tool results (zero LLM cost)
         messages = self._prune_old_tool_results(messages)
+        messages = self.apply_tail_token_budget(messages)
 
         # Check if pruning was enough
         token_count = self._estimate_tokens(messages, system_prompt)
@@ -104,7 +112,7 @@ class ContextCompressor(ContextEngine):
 
         # Measure effectiveness
         summary_msg = build_system_summary_api_message(summary)
-        compressed = head + [summary_msg] + tail
+        compressed = head + [summary_msg] + self.apply_tail_token_budget(tail)
         after_tokens = count_messages_tokens(compressed, model=self.model) + count_messages_tokens([], system_prompt, model=self.model)
 
         if before_tokens > 0 and (before_tokens - after_tokens) / before_tokens < 0.10:
@@ -118,7 +126,8 @@ class ContextCompressor(ContextEngine):
         logger.info("Compressed: %d → %d tokens (saved %d%%)",
                      before_tokens, after_tokens,
                      int((1 - after_tokens / (before_tokens or 1)) * 100))
-        return compressed
+        # Summary insertion can sit between tool_use and tool_result; repair pairing.
+        return repair_native_tool_messages(compressed)
 
     def on_session_start(self) -> None:
         self._previous_summary = None
@@ -131,69 +140,31 @@ class ContextCompressor(ContextEngine):
     # ── Step 1: prune old tool results ─────────────────
 
     def _prune_old_tool_results(self, messages: list[dict]) -> list[dict]:
-        """Remove tool_result blocks from the middle segment (not head/tail).
-        Pure regex/text matching — no LLM cost. Also cleans orphan tool_use blocks.
-        """
-        if len(messages) <= self.protect_head + self.protect_tail:
-            return messages
+        return prune_old_tool_results(
+            messages,
+            protect_head=self.protect_head,
+            protect_tail=self.protect_tail,
+        )
 
-        middle = messages[self.protect_head:-self.protect_tail]
-        result: list[dict] = list(messages[:self.protect_head])
-
-        for msg in middle:
-            content = msg.get("content")
-            if isinstance(content, list):
-                # Keep only non-tool_result blocks
-                kept = [b for b in content if b.get("type") != "tool_result"]
-                if kept:
-                    new_msg = dict(msg)
-                    new_msg["content"] = kept
-                    result.append(new_msg)
-                # If all blocks were tool_result, drop the message entirely
-            else:
-                result.append(msg)
-
-        result.extend(messages[-self.protect_tail:])
-
-        # Clean orphan tool_use blocks (no matching tool_result)
-        result = self._clean_orphan_tool_uses(result)
-
-        return result
+    def apply_tail_token_budget(
+        self,
+        messages: list[dict],
+        *,
+        protect_head: int | None = None,
+        protect_tail: int | None = None,
+    ) -> list[dict]:
+        """Keep the tail within ``tail_token_budget``, truncating oversized messages."""
+        return fit_tail_token_budget(
+            messages,
+            model=self.model,
+            tail_token_budget=self.tail_token_budget,
+            protect_head=self.protect_head if protect_head is None else protect_head,
+            protect_tail=self.protect_tail if protect_tail is None else protect_tail,
+        )
 
     @staticmethod
     def _clean_orphan_tool_uses(messages: list[dict]) -> list[dict]:
-        """Remove tool_use blocks that no longer have a matching tool_result."""
-        # Collect all tool_call_ids that have results
-        has_result: set[str] = set()
-        for msg in messages:
-            content = msg.get("content")
-            if isinstance(content, list):
-                for b in content:
-                    if b.get("type") == "tool_result":
-                        tid = b.get("tool_use_id", "")
-                        if tid:
-                            has_result.add(tid)
-
-        # Remove tool_use blocks without results
-        cleaned: list[dict] = []
-        for msg in messages:
-            content = msg.get("content")
-            if isinstance(content, list):
-                kept = []
-                for b in content:
-                    if b.get("type") == "tool_use":
-                        if b.get("id", "") in has_result:
-                            kept.append(b)
-                        # else: orphan → drop it
-                    else:
-                        kept.append(b)
-                if kept:
-                    new_msg = dict(msg)
-                    new_msg["content"] = kept
-                    cleaned.append(new_msg)
-            else:
-                cleaned.append(msg)
-        return cleaned
+        return _clean_orphan_tool_uses(messages)
 
     # ── Step 2: LLM summary ────────────────────────────
 
@@ -276,6 +247,96 @@ def build_simple_compressor(
 
 
 compression_registry.register("simple", build_simple_compressor, aliases=("compressor",))
+
+
+def prune_old_tool_results(
+    messages: list[dict],
+    *,
+    protect_head: int = 2,
+    protect_tail: int = 6,
+) -> list[dict]:
+    """Remove tool_result blocks from the middle segment (not head/tail)."""
+    if len(messages) <= protect_head + protect_tail:
+        return messages
+
+    middle = messages[protect_head:-protect_tail]
+    result: list[dict] = list(messages[:protect_head])
+
+    for msg in middle:
+        content = msg.get("content")
+        if isinstance(content, list):
+            kept = [b for b in content if b.get("type") != "tool_result"]
+            if kept:
+                new_msg = dict(msg)
+                new_msg["content"] = kept
+                result.append(new_msg)
+        else:
+            result.append(msg)
+
+    result.extend(messages[-protect_tail:])
+    result = _clean_orphan_tool_uses(result)
+    return repair_native_tool_messages(result)
+
+
+def fit_tail_token_budget(
+    messages: list[dict],
+    *,
+    model: str = "",
+    tail_token_budget: int = 0,
+    protect_head: int = 2,
+    protect_tail: int = 6,
+) -> list[dict]:
+    """Truncate/drop tail messages so the tail stays within ``tail_token_budget``."""
+    if tail_token_budget <= 0 or not messages:
+        return messages
+    if len(messages) <= protect_tail:
+        head: list[dict] = []
+        tail = list(messages)
+    else:
+        head = list(messages[:-protect_tail])
+        tail = list(messages[-protect_tail:])
+
+    fitted = [truncate_message_to_tokens(message, tail_token_budget, model) for message in tail]
+    fitted = fit_messages_to_token_budget(
+        fitted,
+        model=model,
+        max_tokens=tail_token_budget,
+        protect_head=0,
+        protect_last=1,
+    )
+    return repair_native_tool_messages(head + fitted)
+
+
+def _clean_orphan_tool_uses(messages: list[dict]) -> list[dict]:
+    """Remove tool_use blocks that no longer have a matching tool_result."""
+    has_result: set[str] = set()
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            for b in content:
+                if b.get("type") == "tool_result":
+                    tid = b.get("tool_use_id", "")
+                    if tid:
+                        has_result.add(tid)
+
+    cleaned: list[dict] = []
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, list):
+            kept = []
+            for b in content:
+                if b.get("type") == "tool_use":
+                    if b.get("id", "") in has_result:
+                        kept.append(b)
+                else:
+                    kept.append(b)
+            if kept:
+                new_msg = dict(msg)
+                new_msg["content"] = kept
+                cleaned.append(new_msg)
+        else:
+            cleaned.append(msg)
+    return cleaned
 
 
 def _format_messages_for_summary(messages: list[dict]) -> str:

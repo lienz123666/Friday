@@ -867,6 +867,70 @@ async def test_llm_failure_returns_failed_status(provider):
     assert error_event.data["detail_id"].startswith("err_")
 
 
+class ContextLengthTransport(MockTransport):
+    async def call(self, messages, system_prompt="", tools=None, max_tokens=4096, stream=False):
+        self.calls += 1
+        self.call_messages.append(messages)
+        raise RuntimeError("This model's maximum context length is 8192 tokens")
+
+
+@pytest.mark.asyncio
+async def test_hard_budget_gate_does_not_call_provider_when_immovable(provider):
+    from personal_agent.conversation.events import EventRecorder
+
+    recorder = EventRecorder()
+    transport = MockTransport([
+        NormalizedResponse(text="should not run", finish_reason="end_turn"),
+    ])
+    tight = ProviderProfile(
+        name="test",
+        base_url="http://test",
+        api_key="k",
+        model="m",
+        max_tokens=40,
+        context_window=120,
+    )
+    agent = init_agent(transport, tight, enabled_toolsets=["__none__"])
+    agent.tools = []
+    agent._cached_system_prompt = "S" * 4000
+    ctx = await build_turn_context(agent, "Hi")
+
+    result = await run_conversation(agent, ctx, event_sink=recorder)
+
+    assert transport.calls == 0
+    assert result["completed"] is False
+    assert result["status"] == "context_overflow"
+    assert result["context_overflow"] is True
+    assert "上下文超出限制" in result["final_response"]
+    assert result["turn_report"]["status"] == "context_overflow"
+    error_event = next(event for event in recorder.events if event.type == "error")
+    assert error_event.data["category"] == "context_overflow"
+    assert error_event.data["overflow_source"]
+    assert result["turn_report"]["context_recovery"]["immovable_overflow"] is True
+
+
+@pytest.mark.asyncio
+async def test_provider_context_length_error_retries_once_then_overflow(provider):
+    from personal_agent.conversation.events import EventRecorder
+
+    recorder = EventRecorder()
+    transport = ContextLengthTransport([])
+    agent = init_agent(transport, provider, enabled_toolsets=["__none__"])
+    agent.tools = []
+    ctx = await build_turn_context(agent, "Hi")
+
+    result = await run_conversation(agent, ctx, event_sink=recorder)
+
+    assert transport.calls == 2
+    assert result["status"] == "context_overflow"
+    assert result["context_overflow"] is True
+    assert result["turn_report"]["status"] == "context_overflow"
+    retry = next(event for event in recorder.events if event.type == "retry")
+    assert retry.data["category"] == "context_overflow"
+    error_event = next(event for event in recorder.events if event.type == "error")
+    assert error_event.data["category"] == "context_overflow"
+
+
 @pytest.mark.asyncio
 async def test_interrupt_emits_structured_stop_event(provider):
     from personal_agent.conversation.events import EventRecorder
@@ -895,10 +959,12 @@ async def test_retry_state_reset():
     rs.empty_content_retries = 2
     rs.invalid_tool_retries = 1
     rs.post_tool_empty_retried = True
+    rs.context_overflow_recovered = True
     rs.reset()
     assert rs.empty_content_retries == 0
     assert rs.invalid_tool_retries == 0
     assert not rs.post_tool_empty_retried
+    assert not rs.context_overflow_recovered
 
 
 # ── streaming delta events (Phase 2 platform-safe gate) ────────────────

@@ -387,6 +387,7 @@ async def _usage(runtime: CommandRuntime, *, current_user_message: str) -> str:
 
     from personal_agent.context_budget import build_context_budget
     from personal_agent.context_budget import compose_context_text
+    from personal_agent.context_budget import format_context_budget_report
 
     budget = await build_context_budget(
         messages=history,
@@ -399,10 +400,10 @@ async def _usage(runtime: CommandRuntime, *, current_user_message: str) -> str:
         memory_injections=getattr(agent, "_last_memory_injections", ""),
         current_user_message=current_user_message,
     )
-    threshold_line = ""
-    if budget.compression_threshold:
-        marker = "，已达到" if budget.over_compression_threshold else ""
-        threshold_line = f"压缩阈值: {budget.compression_threshold:,} tokens{marker}\n"
+    budget_lines = format_context_budget_report(
+        budget,
+        recovery=getattr(agent, "_last_context_recovery", None),
+    )
     recent_tool_calls = len(getattr(agent, "_last_tool_results", []) or [])
     max_tool_calls = int(getattr(agent, "_max_tool_calls_per_turn", 0) or 0)
     return (
@@ -411,15 +412,7 @@ async def _usage(runtime: CommandRuntime, *, current_user_message: str) -> str:
         f"输入 tokens: {agent.session_prompt_tokens:,} (API 报告)\n"
         f"输出 tokens: {agent.session_completion_tokens:,} (API 报告)\n"
         f"\n上下文窗口 (估算)\n"
-        f"已用: {budget.used:,} / {budget.context_limit:,} tokens ({budget.percent}%)\n"
-        f"  system prompt: {budget.system_prompt:,}\n"
-        f"  history messages: {budget.history_messages:,}\n"
-        f"  tools schema: {budget.tools_schema:,}\n"
-        f"  skills: {budget.skills:,}\n"
-        f"  memory injections: {budget.memory_injections:,}\n"
-        f"  MCP tools: {budget.mcp_tools:,}\n"
-        f"剩余: {budget.remaining_context:,} tokens\n"
-        f"{threshold_line}"
+        f"{budget_lines}\n"
         f"\n最近一轮工具执行: {recent_tool_calls} 次\n"
         f"单轮工具上限: {max_tool_calls} 次"
     )
